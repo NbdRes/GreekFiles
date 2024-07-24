@@ -1,0 +1,45 @@
+# Load required libraries
+library(stringr)
+library(rstudioapi)
+
+# Function to clean text
+clean_text <- function(text) {
+  # Remove digits and English letters
+  cleaned <- str_replace_all(text, "[0-9A-Za-z]", "")
+  # Remove extra whitespace
+  cleaned <- str_squish(cleaned)
+  return(cleaned)
+}
+
+# Open file dialog for input file selection
+input_file <- rstudioapi::selectFile(
+  caption = "Select input file",
+  filter = "Text files (*.txt)",
+  existing = TRUE
+)
+
+if (length(input_file) == 0 || is.null(input_file)) {
+  stop("No file selected. Exiting program.")
+}
+
+# Read the input file
+text <- readLines(input_file, warn = FALSE)
+
+# Clean the text
+cleaned_text <- sapply(text, clean_text)
+
+# Open file dialog for output file selection
+output_file <- rstudioapi::selectFile(
+  caption = "Save cleaned file as",
+  filter = "Text files (*.txt)",
+  existing = FALSE
+)
+
+if (length(output_file) == 0 || is.null(output_file)) {
+  stop("No output file specified. Exiting program.")
+}
+
+# Write the cleaned text to the new file
+writeLines(cleaned_text, output_file)
+
+print(paste("Text has been cleaned and saved to:", output_file))

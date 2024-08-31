@@ -1,0 +1,61 @@
+# Load required libraries
+library(stringr)
+library(rstudioapi)
+library(officer)
+
+# Function to clean text
+clean_text <- function(text) {
+  # Keep only Greek letters (both uppercase and lowercase)
+  cleaned <- str_replace_all(text, "[^\\p{Greek}\\s]", "")
+  # Remove extra whitespace
+  cleaned <- str_squish(cleaned)
+  return(cleaned)
+}
+
+# Open file dialog for input file selection
+input_file <- rstudioapi::selectFile(
+  caption = "Select input file",
+  filter = "Text or Word files (*.txt;*.docx)",
+  existing = TRUE
+)
+
+if (length(input_file) == 0 || is.null(input_file)) {
+  stop("No file selected. Exiting program.")
+}
+
+# Determine file type and read the input file
+if (grepl("\\.txt$", input_file)) {
+  text <- readLines(input_file, warn = FALSE)
+} else if (grepl("\\.docx$", input_file)) {
+  doc <- read_docx(input_file)
+  text <- docx_summary(doc)$text
+} else {
+  stop("Unsupported file type. Exiting program.")
+}
+
+cat("File has been read successfully.\n")
+
+# Clean the text
+cleaned_text <- sapply(text, clean_text)
+cat("Text has been cleaned.\n")
+
+# Open file dialog for output file selection
+output_file <- rstudioapi::selectFile(
+  caption = "Save cleaned file as",
+  filter = "Text files (*.txt)",
+  existing = FALSE
+)
+
+if (length(output_file) == 0 || is.null(input_file)) {
+  stop("No output file specified. Exiting program.")
+}
+
+# Write the cleaned text to the new file
+tryCatch(
+  writeLines(cleaned_text, output_file),
+  error = function(e) {
+    stop("Error writing to the output file: ", e$message)
+  }
+)
+
+cat(paste("Text has been cleaned and saved to:", output_file, "\n"))

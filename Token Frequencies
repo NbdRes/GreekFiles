@@ -1,0 +1,69 @@
+# Load required libraries
+library(readr)
+library(stringr)
+library(dplyr)
+library(writexl)
+library(tcltk)
+
+# Function to read file and count word frequencies
+count_word_frequencies <- function(file_path) {
+  # Read the text file
+  text <- read_file(file_path)
+  
+  # Convert to lowercase and remove punctuation
+  text <- tolower(text)
+  text <- str_replace_all(text, "[[:punct:]]", "")
+  
+  # Split into words
+  words <- str_split(text, "\\s+")[[1]]
+  
+  # Count word frequencies
+  word_freq <- table(words)
+  
+  # Calculate total number of words
+  total_words <- sum(word_freq)
+  
+  # Convert to data frame, calculate normalized frequency, and sort
+  word_freq_df <- data.frame(
+    word = names(word_freq),
+    frequency = as.numeric(word_freq),
+    normalized_frequency = as.numeric(word_freq) / total_words
+  )
+  word_freq_df <- word_freq_df[order(-word_freq_df$frequency), ]
+  
+  return(word_freq_df)
+}
+
+# Main program
+main <- function() {
+  # Open file dialog for selecting input file
+  input_file <- tclvalue(tkgetOpenFile(title = "Select text file"))
+  
+  if (nchar(input_file) == 0) {
+    cat("No file selected. Exiting program.\n")
+    return()
+  }
+  
+  # Count word frequencies
+  word_freq_df <- count_word_frequencies(input_file)
+  
+  # Open file dialog for saving Excel file
+  output_file <- tclvalue(tkgetSaveFile(
+    defaultextension = ".xlsx",
+    filetypes = "{{Excel Files} {.xlsx}}",
+    title = "Save Excel file"
+  ))
+  
+  if (nchar(output_file) == 0) {
+    cat("No save location selected. Exiting program.\n")
+    return()
+  }
+  
+  # Write to Excel file
+  write_xlsx(word_freq_df, output_file)
+  
+  cat("Word frequencies have been saved to", output_file, "\n")
+}
+
+# Run the main program
+main()

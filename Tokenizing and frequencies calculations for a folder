@@ -4,8 +4,6 @@ library(stringr)
 library(dplyr)
 library(writexl)
 library(tcltk)
-library(purrr)
-library(tidyr)
 
 # Function to read file and count word frequencies
 count_word_frequencies <- function(file_path) {
@@ -31,59 +29,49 @@ count_word_frequencies <- function(file_path) {
     frequency = as.numeric(word_freq),
     normalized_frequency = as.numeric(word_freq) / total_words
   )
+  word_freq_df <- word_freq_df[order(-word_freq_df$frequency), ]
   
   return(word_freq_df)
 }
 
-# Function to process all files in a folder
-process_folder <- function(folder_path) {
-  # Get all txt files in the folder
-  files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
-  
-  # Process each file
-  results <- map(files, function(file) {
-    freq_df <- count_word_frequencies(file)
-    freq_df$file <- basename(file)
-    return(freq_df)
-  })
-  
-  # Combine results
-  combined_results <- bind_rows(results)
-  
-  # Calculate overall frequencies
-  overall_freq <- combined_results %>%
-    group_by(word) %>%
-    summarise(
-      overall_frequency = sum(frequency),
-      overall_normalized_frequency = sum(frequency) / sum(combined_results$frequency)
-    )
-  
-  # Join overall frequencies with individual file frequencies
-  final_results <- combined_results %>%
-    pivot_wider(
-      id_cols = word,
-      names_from = file,
-      values_from = c(frequency, normalized_frequency),
-      values_fill = list(frequency = 0, normalized_frequency = 0)
-    ) %>%
-    left_join(overall_freq, by = "word") %>%
-    arrange(desc(overall_frequency))
-  
-  return(final_results)
-}
-
 # Main program
 main <- function() {
-  # Open folder selection dialog
-  folder_path <- tclvalue(tkchooseDirectory(title = "Select folder containing text files"))
+  # Open folder dialog for selecting input folder
+  input_folder <- tclvalue(tkchooseDirectory(title = "Select folder containing text files"))
   
-  if (nchar(folder_path) == 0) {
+  if (nchar(input_folder) == 0) {
     cat("No folder selected. Exiting program.\n")
     return()
   }
   
-  # Process all files in the folder
-  results <- process_folder(folder_path)
+  # Get all text files in the folder
+  txt_files <- list.files(input_folder, pattern = "*.txt", full.names = TRUE)
+  
+  if (length(txt_files) == 0) {
+    cat("No text files found in the selected folder. Exiting program.\n")
+    return()
+  }
+  
+  # Process each file and store results in a list
+  results <- list()
+  for (file in txt_files) {
+    file_name <- basename(file)
+    word_freq_df <- count_word_frequencies(file)
+    results[[file_name]] <- word_freq_df
+  }
+  
+  # Combine results into a single data frame
+  combined_results <- Reduce(function(x, y) full_join(x, y, by = "word"), results)
+  
+  # Rename columns to match file names
+  colnames(combined_results)[-1] <- paste0(rep(c("frequency_", "normalized_frequency_"), length(results)), 
+                                           rep(names(results), each = 2))
+  
+  # Sort by the sum of frequencies across all files
+  combined_results <- combined_results %>%
+    mutate(total_frequency = rowSums(select(., starts_with("frequency_")), na.rm = TRUE)) %>%
+    arrange(desc(total_frequency)) %>%
+    select(-total_frequency)
   
   # Open file dialog for saving Excel file
   output_file <- tclvalue(tkgetSaveFile(
@@ -98,9 +86,9 @@ main <- function() {
   }
   
   # Write to Excel file
-  write_xlsx(results, output_file)
+  write_xlsx(combined_results, output_file)
   
-  cat("Word frequencies have been saved to", output_file, "\n")
+  cat("Word frequencies for all files have been saved to", output_file, "\n")
 }
 
 # Run the main program

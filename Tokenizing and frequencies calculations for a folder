@@ -1,8 +1,15 @@
-# Load required libraries.
+# Check and install required packages
+required_packages <- c("readr", "stringr", "dplyr", "writexl", "tidyr", "data.table")
+new_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+# Load required libraries
 library(readr)
 library(stringr)
 library(dplyr)
 library(writexl)
+library(tidyr)
+library(data.table)
 library(tcltk)
 
 # Function to read file and count word frequencies
@@ -14,22 +21,19 @@ count_word_frequencies <- function(file_path) {
   text <- tolower(text)
   text <- str_replace_all(text, "[[:punct:]]", "")
   
-  # Split into words
+  # Split into words and count frequencies
   words <- str_split(text, "\\s+")[[1]]
-  
-  # Count word frequencies
   word_freq <- table(words)
   
   # Calculate total number of words
   total_words <- sum(word_freq)
   
-  # Convert to data frame, calculate normalized frequency, and sort
+  # Create data frame with both frequency and normalized frequency
   word_freq_df <- data.frame(
     word = names(word_freq),
     frequency = as.numeric(word_freq),
     normalized_frequency = as.numeric(word_freq) / total_words
   )
-  word_freq_df <- word_freq_df[order(-word_freq_df$frequency), ]
   
   return(word_freq_df)
 }
@@ -52,26 +56,43 @@ main <- function() {
     return()
   }
   
-  # Process each file and store results in a list
-  results <- list()
-  for (file in txt_files) {
-    file_name <- basename(file)
+  cat("Processing", length(txt_files), "files...\n")
+  
+  # Process each file and store results
+  results <- data.table()
+  for (i in seq_along(txt_files)) {
+    file <- txt_files[i]
+    file_name <- tools::file_path_sans_ext(basename(file))
+    cat("Processing file", i, "of", length(txt_files), ":", file_name, "\n")
     word_freq_df <- count_word_frequencies(file)
-    results[[file_name]] <- word_freq_df
+    word_freq_df$file_name <- file_name
+    results <- rbindlist(list(results, word_freq_df), use.names = TRUE, fill = TRUE)
   }
   
-  # Combine results into a single data frame
-  combined_results <- Reduce(function(x, y) full_join(x, y, by = "word"), results)
+  cat("Reshaping data...\n")
   
-  # Rename columns to match file names
-  colnames(combined_results)[-1] <- paste0(rep(c("frequency_", "normalized_frequency_"), length(results)), 
-                                           rep(names(results), each = 2))
+  # Reshape data efficiently using data.table
+  results_wide <- dcast(results, word ~ file_name, 
+                        value.var = c("normalized_frequency", "frequency"),
+                        fun.aggregate = sum)
   
-  # Sort by the sum of frequencies across all files
-  combined_results <- combined_results %>%
-    mutate(total_frequency = rowSums(select(., starts_with("frequency_")), na.rm = TRUE)) %>%
-    arrange(desc(total_frequency)) %>%
-    select(-total_frequency)
+  cat("Sorting results...\n")
+  
+  # Calculate total normalized frequency
+  norm_freq_cols <- grep("^normalized_frequency_", colnames(results_wide), value = TRUE)
+  results_wide[, total_norm_freq := rowSums(.SD, na.rm = TRUE), .SDcols = norm_freq_cols]
+  
+  # Sort by total normalized frequency
+  setorder(results_wide, -total_norm_freq)
+  
+  # Remove total_norm_freq column
+  results_wide[, total_norm_freq := NULL]
+  
+  cat("Preparing final output...\n")
+  
+  # Reorder columns: word, all normalized frequencies, all frequencies
+  freq_cols <- grep("^frequency_", colnames(results_wide), value = TRUE)
+  setcolorder(results_wide, c("word", norm_freq_cols, freq_cols))
   
   # Open file dialog for saving Excel file
   output_file <- tclvalue(tkgetSaveFile(
@@ -85,8 +106,10 @@ main <- function() {
     return()
   }
   
+  cat("Writing results to Excel file...\n")
+  
   # Write to Excel file
-  write_xlsx(combined_results, output_file)
+  write_xlsx(as.data.frame(results_wide), output_file)
   
   cat("Word frequencies for all files have been saved to", output_file, "\n")
 }

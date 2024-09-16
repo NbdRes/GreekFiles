@@ -1,0 +1,41 @@
+# Load required libraries
+library(readxl)
+library(tidyverse)
+library(pheatmap)
+library(tcltk)
+
+# Open a pop-up browser to select the Excel file
+file_path <- tk_choose.files(
+  default = "",
+  caption = "Select Excel file",
+  multi = FALSE,
+  filters = matrix(c("Excel Files", "*.xlsx;*.xls", "All Files", "*.*"), ncol = 2, byrow = TRUE)
+)
+
+# Check if a file was selected
+if (length(file_path) == 0) {
+  stop("No file selected. Exiting the script.")
+}
+
+# Read the Excel file
+data <- read_excel(file_path)
+
+# Assuming the first column contains words and the rest are text columns
+# Convert data to a matrix, using words as row names
+matrix_data <- as.matrix(data[, -1])
+rownames(matrix_data) <- data[[1]]
+
+# Get the top 20 most frequent words
+top_20_words <- names(sort(rowSums(matrix_data), decreasing = TRUE)[1:20])
+
+# Subset the matrix to include only the top 20 words
+top_20_matrix <- matrix_data[top_20_words, ]
+
+# Create the heatmap
+pheatmap(top_20_matrix,
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         main = "Top 20 Most Frequent Words Heatmap",
+         fontsize_row = 8,
+         fontsize_col = 8,
+         angle_col = 45)

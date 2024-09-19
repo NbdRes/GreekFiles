@@ -1,0 +1,83 @@
+# Load required libraries
+library(tm)
+library(wordcloud)
+library(RColorBrewer)
+library(rstudioapi) # For the file chooser dialog
+
+# Function to choose folder
+choose_folder <- function() {
+  if (rstudioapi::isAvailable()) {
+    return(rstudioapi::selectDirectory(
+      caption = "Select folder containing text files",
+      label = "Select",
+      path = getwd()
+    ))
+  } else {
+    return(choose.dir(default = getwd(), caption = "Select folder containing text files"))
+  }
+}
+
+# Get the folder path from user
+folder_path <- choose_folder()
+
+if (is.null(folder_path)) {
+  stop("No folder selected. Exiting script.")
+}
+
+# Read all text files in the folder
+files <- list.files(folder_path, pattern = "*.txt", full.names = TRUE)
+if (length(files) == 0) {
+  stop("No text files found in the selected folder.")
+}
+corpus <- Corpus(VectorSource(sapply(files, readLines)))
+
+# Preprocess the text
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+corpus <- tm_map(corpus, stripWhitespace)
+
+# Create a document-term matrix
+dtm <- DocumentTermMatrix(corpus)
+
+# Calculate word frequencies
+word_freq <- sort(colSums(as.matrix(dtm)), decreasing = TRUE)
+
+# Get the top 200 most frequent words (increased from 100)
+top_words <- head(word_freq, 200)
+
+# Function to create and save high-resolution word cloud
+create_high_res_wordcloud <- function(words, freqs, filename, width = 3000, height = 2000) {
+  png(filename, width = width, height = height, res = 300)
+  wordcloud(words = words, freq = freqs, 
+            scale = c(6, 0.5),  # Adjust the scale for better word sizing
+            min.freq = 2,       # Minimum frequency of words to include
+            max.words = 200,    # Increased max words
+            random.order = FALSE, 
+            rot.per = 0.35,
+            colors = brewer.pal(8, "Dark2"),
+            random.color = FALSE)  # Use consistent colors
+  dev.off()
+}
+
+# Create and save high-resolution word cloud
+create_high_res_wordcloud(names(top_words), top_words, "high_res_wordcloud.png")
+
+# Display word cloud on screen (lower resolution for speed)
+dev.new(width = 10, height = 8)  # Open a new plot window with specific dimensions
+wordcloud(words = names(top_words), freq = top_words, 
+          scale = c(4, 0.5),     # Slightly smaller scale for screen display
+          min.freq = 2, 
+          max.words = 200, 
+          random.order = FALSE, 
+          rot.per = 0.35,
+          colors = brewer.pal(8, "Dark2"),
+          random.color = FALSE)
+
+print("High-resolution word cloud has been saved as 'high_res_wordcloud.png'")
+print(paste("The word cloud image has been saved in:", getwd()))
+
+# Display the top 15 most frequent words
+print("Top 15 most frequent words:")
+print(head(top_words, 15))

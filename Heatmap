@@ -2,10 +2,9 @@
 library(readxl)
 library(tidyverse)
 library(pheatmap)
-library(tcltk)
 
 # Open a pop-up browser to select the Excel file
-file_path <- tk_choose.files(
+file_path <- choose.files(
   default = "",
   caption = "Select Excel file",
   multi = FALSE,

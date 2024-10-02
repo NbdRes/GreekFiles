@@ -1,0 +1,80 @@
+# Install and load required packages
+if (!require("udpipe")) install.packages("udpipe")
+if (!require("tcltk")) install.packages("tcltk")
+library(udpipe)
+library(tcltk)
+
+# Function to get or download the Ancient Greek model
+get_greek_model <- function() {
+  model_dir <- file.path(getwd(), "udpipe_models")
+  if (!dir.exists(model_dir)) {
+    dir.create(model_dir, recursive = TRUE)
+  }
+  model_file <- file.path(model_dir, "ancient_greek-perseus-ud-2.5-191206.udpipe")
+  
+  if (!file.exists(model_file)) {
+    message("Downloading Ancient Greek model...")
+    udmodel <- udpipe_download_model(language = "ancient_greek-perseus", model_dir = model_dir)
+    model_file <- udmodel$file_model
+  }
+  
+  return(model_file)
+}
+
+# Function to lemmatize Ancient Greek text
+lemmatize_greek <- function(text, model) {
+  # Annotate the text
+  x <- udpipe_annotate(model, x = text)
+  
+  # Convert annotations to data frame
+  x <- as.data.frame(x)
+  
+  # Return lemmatized text
+  paste(x$lemma, collapse = " ")
+}
+
+# Main function to process the file
+process_file <- function() {
+  # Load the model
+  model_file <- get_greek_model()
+  model <- udpipe_load_model(file = model_file)
+  
+  # Open file selection dialog
+  input_file <- tk_choose.files(default = "", caption = "Select Greek text file")
+  if (input_file == "") return(invisible(NULL))
+  
+  # Read the file
+  text <- readLines(input_file, encoding = "UTF-8")
+  
+  # Process each line
+  processed_text <- sapply(text, function(line) {
+    # Split the line into words
+    words <- strsplit(line, "\\s+")[[1]]
+    
+    # Lemmatize each word
+    lemmatized_words <- sapply(words, function(word) {
+      lemmatized <- lemmatize_greek(word, model)
+      # If lemmatization failed (e.g., for punctuation), return the original word
+      if (lemmatized == "") word else lemmatized
+    })
+    
+    # Recombine the words
+    paste(lemmatized_words, collapse = " ")
+  })
+  
+  # Open file save dialog
+  output_file <- tclvalue(tkgetSaveFile(
+    defaultextension = ".txt",
+    filetypes = "{{Text Files} {.txt}}",
+    title = "Save lemmatized text file"
+  ))
+  if (output_file == "") return(invisible(NULL))
+  
+  # Write the processed text to the file
+  writeLines(processed_text, output_file, useBytes = TRUE)
+  
+  message("Lemmatization complete. File saved successfully.")
+}
+
+# Run the main function
+process_file()

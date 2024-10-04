@@ -33,18 +33,10 @@ lemmatize_greek <- function(text, model) {
   paste(x$lemma, collapse = " ")
 }
 
-# Main function to process the file
-process_file <- function() {
-  # Load the model
-  model_file <- get_greek_model()
-  model <- udpipe_load_model(file = model_file)
-  
-  # Open file selection dialog
-  input_file <- tk_choose.files(default = "", caption = "Select Greek text file")
-  if (input_file == "") return(invisible(NULL))
-  
+# Function to process a single file
+process_file <- function(file_path, model) {
   # Read the file
-  text <- readLines(input_file, encoding = "UTF-8")
+  text <- readLines(file_path, encoding = "UTF-8")
   
   # Process each line
   processed_text <- sapply(text, function(line) {
@@ -62,19 +54,45 @@ process_file <- function() {
     paste(lemmatized_words, collapse = " ")
   })
   
-  # Open file save dialog
-  output_file <- tclvalue(tkgetSaveFile(
-    defaultextension = ".txt",
-    filetypes = "{{Text Files} {.txt}}",
-    title = "Save lemmatized text file"
-  ))
-  if (output_file == "") return(invisible(NULL))
+  # Create the new file name
+  new_file_name <- paste0("Lemmatized_", basename(file_path))
+  new_file_path <- file.path(dirname(file_path), new_file_name)
   
-  # Write the processed text to the file
-  writeLines(processed_text, output_file, useBytes = TRUE)
+  # Write the processed text to the new file
+  writeLines(processed_text, new_file_path, useBytes = TRUE)
   
-  message("Lemmatization complete. File saved successfully.")
+  message(paste("Processed:", basename(file_path)))
+}
+
+# Main function to process all files in a folder
+process_folder <- function() {
+  # Load the model
+  model_file <- get_greek_model()
+  model <- udpipe_load_model(file = model_file)
+  
+  # Open folder selection dialog
+  folder_path <- tclvalue(tkchooseDirectory(title = "Select folder containing Greek text files"))
+  if (folder_path == "") return(invisible(NULL))
+  
+  # Get all txt files in the folder
+  txt_files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+  
+  if (length(txt_files) == 0) {
+    message("No .txt files found in the selected folder.")
+    return(invisible(NULL))
+  }
+  
+  # Process each file
+  for (file in txt_files) {
+    tryCatch({
+      process_file(file, model)
+    }, error = function(e) {
+      message(paste("Error processing", basename(file), ":", e$message))
+    })
+  }
+  
+  message("All files processed. Lemmatized versions saved in the same folder.")
 }
 
 # Run the main function
-process_file()
+process_folder()

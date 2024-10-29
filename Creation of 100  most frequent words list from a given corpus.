@@ -1,0 +1,106 @@
+# Load required libraries
+library(tidytext)
+library(dplyr)
+library(stringi)
+library(data.table)
+
+# Function to choose directory (works on Windows)
+choose_directory <- function() {
+    if (.Platform$OS.type == "windows") {
+        choose.dir()
+    } else {
+        file.choose()
+    }
+}
+
+# Custom tokenizer function for Greek text
+tokenize_greek <- function(text) {
+    # Normalize Unicode
+    text <- stri_trans_general(text, "NFKC")
+    
+    # Split into words, keeping Greek characters and removing punctuation
+    words <- stri_split_boundaries(text, type = "word") %>%
+        unlist() %>%
+        # Remove whitespace and punctuation-only tokens
+        stri_trim_both() %>%
+        `[`(stri_length(.) > 0)
+    
+    return(words)
+}
+
+# Open a popup browser to select a folder
+folder_path <- choose_directory()
+
+# Read all text files in the folder
+files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+
+# Create empty data frame to store all words
+all_words <- data.frame(word = character(), n = numeric(), stringsAsFactors = FALSE)
+
+# Process each file
+for(file in files) {
+    # Read the file with UTF-8 encoding
+    tryCatch({
+        text <- readLines(file, encoding = "UTF-8", warn = FALSE)
+        
+        # Tokenize the text using our custom function
+        words <- unlist(lapply(text, tokenize_greek))
+        
+        # Count word frequencies
+        word_counts <- table(words)
+        
+        # Convert to data frame
+        words_df <- data.frame(
+            word = names(word_counts),
+            n = as.numeric(word_counts),
+            stringsAsFactors = FALSE
+        ) %>%
+            arrange(desc(n))
+        
+        # Combine with existing words
+        all_words <- bind_rows(all_words, words_df) %>%
+            group_by(word) %>%
+            summarise(n = sum(n)) %>%
+            arrange(desc(n))
+        
+        cat("Successfully processed:", file, "\n")
+        
+    }, error = function(e) {
+        cat("Error processing file:", file, "\n")
+        cat("Error message:", e$message, "\n")
+    })
+}
+
+# Get top 100 words
+top_100_words <- head(all_words, 100)
+
+# Create the output filename
+output_file <- file.path(folder_path, "100 MFW list.csv")
+
+# Convert to data.table and save with proper encoding
+dt <- as.data.table(top_100_words)
+
+# Add BOM for Excel compatibility
+if(.Platform$OS.type == "windows") {
+    # Write BOM
+    writeBin(BOM <- charToRaw("\xEF\xBB\xBF"), output_file)
+    # Append the data
+    fwrite(dt, output_file, append = TRUE, bom = FALSE)
+} else {
+    # For non-Windows systems
+    fwrite(dt, output_file)
+}
+
+# Print confirmation message and preview
+cat("\nAnalysis complete! The file '100 MFW list.csv' has been saved in:", folder_path, "\n\n")
+cat("First 10 most frequent words:\n")
+print(head(top_100_words, 10))
+
+# Optional: Display encoding check
+cat("\nEncoding check of first few words:\n")
+for(i in 1:min(5, nrow(top_100_words))) {
+    cat(sprintf("Word %d: %s (hex: %s)\n", 
+                i, 
+                top_100_words$word[i],
+                paste(charToRaw(top_100_words$word[i]), collapse=" ")))
+}

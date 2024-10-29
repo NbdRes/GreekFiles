@@ -1,0 +1,101 @@
+# Install and load required packages
+if (!require("udpipe")) install.packages("udpipe")
+if (!require("tcltk")) install.packages("tcltk")
+library(udpipe)
+library(tcltk)
+
+# Function to get or download the Ancient Greek model
+get_greek_model <- function() {
+    model_dir <- file.path(getwd(), "udpipe_models")
+    if (!dir.exists(model_dir)) {
+        dir.create(model_dir, recursive = TRUE)
+    }
+    model_file <- file.path(model_dir, "ancient_greek-perseus-ud-2.5-191206.udpipe")
+    
+    if (!file.exists(model_file)) {
+        message("Downloading Ancient Greek model...")
+        udmodel <- udpipe_download_model(language = "ancient_greek-perseus", model_dir = model_dir)
+        model_file <- udmodel$file_model
+    }
+    
+    return(model_file)
+}
+
+# Function to lemmatize Ancient Greek text
+lemmatize_greek <- function(text, model) {
+    # Annotate the text
+    x <- udpipe_annotate(model, x = text)
+    
+    # Convert annotations to data frame
+    x <- as.data.frame(x)
+    
+    # Return lemmatized text
+    paste(x$lemma, collapse = " ")
+}
+
+# Function to process a single file
+process_file <- function(file_path, model) {
+    # Read the file
+    text <- readLines(file_path, encoding = "UTF-8")
+    
+    # Process each line
+    processed_text <- sapply(text, function(line) {
+        # Split the line into words
+        words <- strsplit(line, "\\s+")[[1]]
+        
+        # Lemmatize each word
+        lemmatized_words <- sapply(words, function(word) {
+            lemmatized <- lemmatize_greek(word, model)
+            # If lemmatization failed (e.g., for punctuation), return the original word
+            if (lemmatized == "") word else lemmatized
+        })
+        
+        # Recombine the words
+        paste(lemmatized_words, collapse = " ")
+    })
+    
+    # Create the new file name
+    file_name <- tools::file_path_sans_ext(basename(file_path))
+    file_ext <- tools::file_ext(file_path)
+    new_file_name <- paste0(file_name, "_Lemmatized.", file_ext)
+    new_file_path <- file.path(dirname(file_path), new_file_name)
+    
+    # Write the processed text to the new file
+    writeLines(processed_text, new_file_path, useBytes = TRUE)
+    
+    message(paste("Processed:", basename(file_path)))
+}
+
+
+# Main function to process all files in a folder
+process_folder <- function() {
+    # Load the model
+    model_file <- get_greek_model()
+    model <- udpipe_load_model(file = model_file)
+    
+    # Open folder selection dialog
+    folder_path <- tclvalue(tkchooseDirectory(title = "Select folder containing Greek text files"))
+    if (folder_path == "") return(invisible(NULL))
+    
+    # Get all txt files in the folder
+    txt_files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+    
+    if (length(txt_files) == 0) {
+        message("No .txt files found in the selected folder.")
+        return(invisible(NULL))
+    }
+    
+    # Process each file
+    for (file in txt_files) {
+        tryCatch({
+            process_file(file, model)
+        }, error = function(e) {
+            message(paste("Error processing", basename(file), ":", e$message))
+        })
+    }
+    
+    message("All files processed. Lemmatized versions saved in the same folder.")
+}
+
+# Run the main function
+process_folder()

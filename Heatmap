@@ -37,4 +37,4 @@ pheatmap(top_20_matrix,
          main = "Top 20 Most Frequent Words Heatmap",
          fontsize_row = 8,
          fontsize_col = 8,
-         angle_col = 45)
+         angle_col = 90)

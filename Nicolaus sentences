@@ -1,0 +1,203 @@
+# Required packages
+library(openxlsx)
+library(tcltk)
+
+# Function to get all possible 7-word sequences
+get_seven_word_sequences <- function(text) {
+    # Handle NA values
+    if (is.na(text)) return(character(0))
+    
+    # Convert to character and trim whitespace
+    text <- trimws(as.character(text))
+    
+    # Return empty if text is empty
+    if (text == "") return(character(0))
+    
+    # Split the text into words
+    words <- unlist(strsplit(text, "\\s+"))
+    
+    # If less than 7 words, return the whole text
+    if (length(words) < 7) {
+        return(paste(words, collapse = " "))
+    }
+    
+    # Get all possible 7-word sequences
+    sequences <- character(length(words) - 6)
+    for(i in 1:(length(words) - 6)) {
+        sequences[i] <- paste(words[i:(i+6)], collapse = " ")
+    }
+    
+    return(sequences)
+}
+
+# Function to check if any 7-word sequence matches
+find_matching_sequence <- function(text1, text2) {
+    # Get all 7-word sequences from both texts
+    seq1 <- get_seven_word_sequences(text1)
+    seq2 <- get_seven_word_sequences(text2)
+    
+    # If either text produced no sequences, return FALSE
+    if (length(seq1) == 0 || length(seq2) == 0) return(FALSE)
+    
+    # Check if any sequence from text2 appears in text1
+    return(any(seq2 %in% seq1))
+}
+
+# Function to show message box and get file with proper dialog
+get_file_with_message <- function(message, is_save = FALSE) {
+    tkmessageBox(
+        message = message,
+        icon = "info",
+        type = "ok"
+    )
+    
+    if (is_save) {
+        repeat {
+            file_path <- tclvalue(tkgetSaveFile(
+                defaultextension = ".xlsx",
+                filetypes = "{{\".xlsx files\" {.xlsx}} {{All files} {*}}}"
+            ))
+            
+            if (file_path == "") {
+                response <- tkmessageBox(
+                    message = "No file selected. Do you want to try again?",
+                    icon = "question",
+                    type = "yesno"
+                )
+                if (tclvalue(response) == "no") {
+                    stop("Process cancelled by user.")
+                }
+            } else {
+                break
+            }
+        }
+    } else {
+        repeat {
+            file_path <- tclvalue(tkgetOpenFile(
+                filetypes = "{{\".xlsx files\" {.xlsx}} {{All files} {*}}}"
+            ))
+            
+            if (file_path == "") {
+                response <- tkmessageBox(
+                    message = "No file selected. Do you want to try again?",
+                    icon = "question",
+                    type = "yesno"
+                )
+                if (tclvalue(response) == "no") {
+                    stop("Process cancelled by user.")
+                }
+            } else {
+                break
+            }
+        }
+    }
+    
+    return(file_path)
+}
+
+# Main processing function
+process_excel_files <- function() {
+    # Create status window
+    status_window <- tktoplevel()
+    tkwm.title(status_window, "Processing Status")
+    status_label <- tklabel(status_window, text="Initializing...")
+    tkpack(status_label)
+    
+    # Update status
+    update_status <- function(text) {
+        tkconfigure(status_label, text=text)
+        tcl("update")
+    }
+    
+    result_data <- NULL  # Variable to store processed data
+    
+    tryCatch({
+        # Get first Excel file
+        update_status("Selecting first Excel file...")
+        first_file <- get_file_with_message(
+            "Please select the first Excel file containing the 'Nico' column"
+        )
+        
+        # Get second Excel file
+        update_status("Selecting second Excel file...")
+        second_file <- get_file_with_message(
+            "Please select the second Excel file to be updated"
+        )
+        
+        # Read Excel files
+        update_status("Reading Excel files...")
+        first_data <- read.xlsx(first_file)
+        second_data <- read.xlsx(second_file)
+        
+        # Check if 'Nico' column exists in first file
+        if (!"Nico" %in% colnames(first_data)) {
+            stop("'Nico' column not found in the first Excel file")
+        }
+        
+        # Create new column in second data
+        second_data$Nico_Matched <- ""
+        
+        # Process rows
+        total_rows <- nrow(second_data)
+        for (i in 1:total_rows) {
+            update_status(sprintf("Processing row %d of %d...", i, total_rows))
+            
+            current_text <- second_data[[1]][i]
+            matched_values <- c()
+            
+            # Check against each row in first file
+            for (j in 1:nrow(first_data)) {
+                if (find_matching_sequence(first_data[[1]][j], current_text)) {
+                    if (!is.na(first_data$Nico[j])) {
+                        matched_values <- c(matched_values, first_data$Nico[j])
+                    }
+                }
+            }
+            
+            # Update the Nico_Matched column
+            if (length(matched_values) > 0) {
+                second_data$Nico_Matched[i] <- paste(unique(matched_values), collapse = "; ")
+            }
+        }
+        
+        result_data <- second_data  # Store processed data
+        
+        # Close status window before file dialog
+        tkdestroy(status_window)
+        
+        # Get save location
+        save_path <- get_file_with_message(
+            "Please select where to save the updated Excel file",
+            is_save = TRUE
+        )
+        
+        # Create a new workbook and add the data
+        wb <- createWorkbook()
+        addWorksheet(wb, "Sheet1")
+        writeData(wb, "Sheet1", result_data)
+        
+        # Save the workbook
+        saveWorkbook(wb, save_path, overwrite = TRUE)
+        
+        # Show completion message
+        tkmessageBox(
+            message = "Process completed successfully!",
+            icon = "info",
+            type = "ok"
+        )
+        
+    }, error = function(e) {
+        if (!is.null(status_window)) {
+            tkdestroy(status_window)
+        }
+        
+        tkmessageBox(
+            message = paste("An error occurred:", e$message),
+            icon = "error",
+            type = "ok"
+        )
+    })
+}
+
+# Run the main function
+process_excel_files()

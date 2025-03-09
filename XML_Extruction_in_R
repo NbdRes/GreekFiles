@@ -1,0 +1,252 @@
+# Load required libraries
+library(xml2)      # For XML parsing
+library(dplyr)     # For data manipulation
+library(writexl)   # For writing Excel files
+library(stringr)   # For string manipulation
+library(tcltk)     # For custom dialog boxes
+
+# Function to extract XML data
+extract_xml_data <- function(xml_path) {
+    # Read the XML file
+    tryCatch({
+        xml_content <- read_xml(xml_path)
+        
+        # Get the parent folder name
+        folder_name <- basename(dirname(xml_path))
+        
+        # Extract the first 4 digits as the row identifier
+        row_id <- substr(folder_name, 1, 4)
+        
+        # Function to safely extract XML node text
+        extract_text <- function(xpath) {
+            node <- xml_find_first(xml_content, xpath)
+            if (!is.na(node)) {
+                return(xml_text(node))
+            }
+            return("")
+        }
+        
+        # Extract all fields from the XML based on the sample structure
+        data <- data.frame(
+            ID = row_id,
+            FolderName = folder_name,
+            
+            # Main location
+            MainLocation = extract_text("//mainloc"),
+            
+            # Interim serial number
+            InterimSerialNr = extract_text("//interim-serialnr"),
+            
+            # Intro
+            Intro = extract_text("//intro/freetxt"),
+            
+            # Prolog section
+            InterimNr = extract_text("//prolog/interimnr"),
+            Level1MainLoc = extract_text("//prolog/level1-mainloc"),
+            Level2Epoch = extract_text("//prolog/level2-epoch"),
+            Level3SubjectAreas = extract_text("//prolog/level3-subjectareas"),
+            Level4Various = extract_text("//prolog/level4-various"),
+            PrivateNr = extract_text("//prolog/privatenr"),
+            
+            # Serials section
+            SerialNr = extract_text("//serials/serialnr"),
+            SerialNrGroup = extract_text("//serials/serialnr-group"),
+            
+            # Headline section
+            Headline = extract_text("//headline/freetxt"),
+            Language = extract_text("//headline/language"),
+            Types = extract_text("//headline/types"),
+            Dating = extract_text("//headline/dating"),
+            
+            # Description
+            Description = extract_text("//desc/freetxt"),
+            
+            # Measurements
+            Measurements = extract_text("//measure/freetxt"),
+            
+            # Find spot
+            FindSpot = extract_text("//findspot/freetxt"),
+            
+            # Present location
+            PresentLocation = extract_text("//presloc/freetxt"),
+            
+            # Figures section
+            PhotoSource = extract_text("//figures/photo/source"),
+            PhotoFilename = extract_text("//figures/photo/filename"),
+            DrawingSource = extract_text("//figures/drawing/source"),
+            DrawingFilename = extract_text("//figures/drawing/filename"),
+            MapSource = extract_text("//figures/map/source"),
+            MapFilename = extract_text("//figures/map/filename"),
+            
+            # Diplomatic text
+            DiplomaticText = extract_text("//dipl/freetxt"),
+            
+            # Transcribed text
+            Text = extract_text("//text/freetxt"),
+            
+            # Transliteration
+            Transliteration = extract_text("//translit/freetxt"),
+            
+            # Apparatus criticus
+            ApparatusCriticus = extract_text("//appcrit/freetxt"),
+            
+            # Translation
+            Translation = extract_text("//translat/freetxt"),
+            
+            # Commentary
+            Commentary = extract_text("//comment/freetxt"),
+            
+            # Edition princeps
+            EditionPrinceps = extract_text("//edprinc/freetxt"),
+            
+            # Bibliography
+            Bibliography = extract_text("//bibl/freetxt"),
+            
+            # Author
+            Author = extract_text("//author/freetxt"),
+            
+            stringsAsFactors = FALSE
+        )
+        
+        return(data)
+    }, error = function(e) {
+        warning(paste("Error processing file:", xml_path, "-", e$message))
+        # Return empty data frame with column names for all fields
+        return(data.frame(
+            ID = substr(basename(dirname(xml_path)), 1, 4),
+            FolderName = basename(dirname(xml_path)),
+            MainLocation = NA,
+            InterimSerialNr = NA,
+            Intro = NA,
+            InterimNr = NA,
+            Level1MainLoc = NA,
+            Level2Epoch = NA,
+            Level3SubjectAreas = NA,
+            Level4Various = NA,
+            PrivateNr = NA,
+            SerialNr = NA,
+            SerialNrGroup = NA,
+            Headline = NA,
+            Language = NA,
+            Types = NA,
+            Dating = NA,
+            Description = NA,
+            Measurements = NA,
+            FindSpot = NA,
+            PresentLocation = NA,
+            PhotoSource = NA,
+            PhotoFilename = NA,
+            DrawingSource = NA,
+            DrawingFilename = NA,
+            MapSource = NA,
+            MapFilename = NA,
+            DiplomaticText = NA,
+            Text = NA,
+            Transliteration = NA,
+            ApparatusCriticus = NA,
+            Translation = NA,
+            Commentary = NA,
+            EditionPrinceps = NA,
+            Bibliography = NA,
+            Author = NA,
+            stringsAsFactors = FALSE
+        ))
+    })
+}
+
+# Function to get folder path via a custom dialog
+get_folder_path <- function() {
+    # Create a custom dialog for entering the folder path
+    tt <- tktoplevel()
+    tkwm.title(tt, "Enter Folder Path")
+    
+    # Set dialog size and position
+    tkwm.geometry(tt, "500x150")
+    
+    # Create a label
+    label <- tklabel(tt, text = "Enter the full path to the folder you want to scan:")
+    tkpack(label, pady = 10)
+    
+    # Create an entry widget for the path
+    entry_value <- tclVar("")
+    entry <- tkentry(tt, width = 50, textvariable = entry_value)
+    tkpack(entry, pady = 5, padx = 20, fill = "x")
+    
+    # Create a variable to store the result
+    result <- NULL
+    
+    # Function to set the result and close the dialog
+    on_ok <- function() {
+        result <<- tclvalue(entry_value)
+        tkdestroy(tt)
+    }
+    
+    # Create OK button
+    ok_button <- tkbutton(tt, text = "OK", command = on_ok)
+    tkpack(ok_button, pady = 10)
+    
+    # Focus on the entry widget and wait for the user
+    tkfocus(entry)
+    tkwait.window(tt)
+    
+    return(result)
+}
+
+# Main function to process all XML files
+process_xml_files <- function(parent_folder, output_excel_path) {
+    # Check if the folder exists
+    if (!dir.exists(parent_folder)) {
+        stop("The specified folder does not exist: ", parent_folder)
+    }
+    
+    # Get all content.xml files in subfolders
+    xml_files <- list.files(
+        path = parent_folder,
+        pattern = "content.xml$",
+        recursive = TRUE,
+        full.names = TRUE
+    )
+    
+    # Check if any files were found
+    if (length(xml_files) == 0) {
+        stop("No 'content.xml' files found in the specified folder and its subfolders.")
+    }
+    
+    # Process each XML file and combine results
+    result_list <- lapply(xml_files, function(file) {
+        cat("Processing file:", file, "\n")
+        result <- extract_xml_data(file)
+        return(result)
+    })
+    
+    # Combine all data frames into one
+    combined_data <- bind_rows(result_list)
+    
+    # Write to Excel - THIS IS WHERE THE EXCEL FILE IS CREATED
+    write_xlsx(combined_data, output_excel_path)
+    
+    cat("\nProcess completed successfully!\n")
+    cat("Processed", length(xml_files), "XML files.\n")
+    cat("Output saved to:", output_excel_path, "\n")
+    
+    return(combined_data)
+}
+
+# Get folder path from user via dialog
+parent_folder <- get_folder_path()
+
+if (!is.null(parent_folder) && parent_folder != "") {
+    # Set the output Excel file path
+    output_excel_path <- file.path(dirname(parent_folder), "xml_extraction_results.xlsx")
+    
+    # Run the process
+    results <- process_xml_files(parent_folder, output_excel_path)
+    
+    # Preview the results
+    if (nrow(results) > 0) {
+        cat("\nPreview of extracted data:\n")
+        print(head(results))
+    }
+} else {
+    cat("Operation cancelled or no path provided.\n")
+}

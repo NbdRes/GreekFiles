@@ -1,0 +1,118 @@
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(tcltk)
+library(gridExtra)  # For arranging multiple plots
+
+# Function to count words in a text
+count_words <- function(text) {
+  # Split the text by whitespace and count non-empty strings
+  words <- str_split(text, "\\s+")[[1]]
+  words <- words[words != ""]
+  return(length(words))
+}
+
+# Function to count letters in a text
+count_letters <- function(text) {
+  # Remove whitespace and non-letter characters, then count
+  letters <- str_remove_all(text, "[^[:alpha:]]")
+  return(nchar(letters))
+}
+
+# Function to process a text file
+process_file <- function(file_path) {
+  # Get just the filename without path
+  file_name <- basename(file_path)
+  
+  # Read the content of the file
+  content <- tryCatch({
+    readChar(file_path, file.info(file_path)$size)
+  }, error = function(e) {
+    message(paste("Error reading file:", file_path, "-", e$message))
+    return("")
+  })
+  
+  # Count words and letters
+  word_count <- count_words(content)
+  letter_count <- count_letters(content)
+  
+  return(list(
+    filename = file_name,
+    words = word_count,
+    letters = letter_count
+  ))
+}
+
+# Main function
+analyze_txt_files <- function() {
+  # Open folder browser dialog
+  folder_path <- tk_choose.dir(caption = "Select a folder containing TXT files")
+  
+  # Check if a folder was selected
+  if (is.na(folder_path) || folder_path == "") {
+    message("No folder selected. Exiting.")
+    return(NULL)
+  }
+  
+  # Get all TXT files in the selected folder
+  txt_files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+  
+  if (length(txt_files) == 0) {
+    message("No TXT files found in the selected folder.")
+    return(NULL)
+  }
+  
+  # Process each file
+  results <- lapply(txt_files, process_file)
+  
+  # Convert results to a data frame
+  results_df <- do.call(rbind, lapply(results, function(x) {
+    data.frame(
+      filename = x$filename,
+      words = x$words,
+      letters = x$letters,
+      stringsAsFactors = FALSE
+    )
+  }))
+  
+  # Sort by filename
+  results_df <- results_df %>% arrange(filename)
+  
+  # Print tabular results
+  cat("\nResults:\n")
+  print(results_df)
+  
+  # Create visualizations
+  create_visualizations(results_df)
+  
+  return(results_df)
+}
+
+# Function to create visualizations
+create_visualizations <- function(data) {
+  # Create and arrange both plots in a grid
+  # Using gridExtra to ensure both plots are displayed
+  word_plot <- ggplot(data, aes(x = reorder(filename, -words), y = words)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Word Count by File", x = "Filename", y = "Word Count")
+  
+  letter_plot <- ggplot(data, aes(x = reorder(filename, -letters), y = letters)) +
+    geom_bar(stat = "identity", fill = "darkgreen") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Letter Count by File", x = "Filename", y = "Letter Count")
+  
+  # Display both plots in a grid layout
+  # This ensures both plots are visible
+  grid.arrange(word_plot, letter_plot, ncol = 1)
+  
+  # Also save the plots to PDF for reference
+  pdf("txt_file_analysis.pdf", width = 10, height = 12)
+  grid.arrange(word_plot, letter_plot, ncol = 1)
+  dev.off()
+}
+
+# Run the analyzer
+results <- analyze_txt_files()

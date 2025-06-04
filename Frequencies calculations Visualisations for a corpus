@@ -1,0 +1,314 @@
+# Load required packages
+library(tcltk)
+library(readr)
+library(stringr)
+# library(textclean) # Not recommended for Greek text due to replace_non_ascii
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+library(scales) # For percent_format
+
+# 1. Select folder
+folder_path <- tk_choose.dir(caption = "Select folder containing Greek text files")
+if (is.na(folder_path) || folder_path == "") {
+  stop("No folder selected. Exiting script.")
+}
+
+# 2. List .txt files
+file_list <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+if (length(file_list) == 0) {
+  stop("No .txt files found in the selected folder. Exiting script.")
+}
+
+# 3. Read & clean function
+read_and_clean <- function(file_path) {
+  text <- read_file(file_path, locale = locale(encoding = "UTF-8"))
+  text <- str_to_lower(text)
+  words <- str_split(text, "\\W+", simplify = FALSE)[[1]]
+  words <- words[words != ""]
+  return(words)
+}
+
+# 4. Read files
+word_data <- lapply(file_list, function(file) {
+  tryCatch({
+    read_and_clean(file)
+  }, error = function(e) {
+    warning(paste("Error processing file:", basename(file), "-", e$message))
+    return(character(0))
+  })
+})
+
+# 5. Frequencies
+word_freqs_list <- lapply(seq_along(word_data), function(i) {
+  if (length(word_data[[i]]) == 0) {
+    return(data.frame(word = character(0),
+                      freq = integer(0),
+                      file = basename(file_list[i]), # Keep file name even if empty
+                      stringsAsFactors = FALSE))
+  }
+  df <- as.data.frame(table(word_data[[i]]), stringsAsFactors = FALSE)
+  if (nrow(df) == 0) {
+      return(data.frame(word = character(0),
+                      freq = integer(0),
+                      file = basename(file_list[i]),
+                      stringsAsFactors = FALSE))
+  }
+  colnames(df) <- c("word", "freq")
+  df$file <- basename(file_list[i])
+  return(df)
+})
+
+freq_df <- bind_rows(word_freqs_list)
+
+if (nrow(freq_df) == 0) {
+  stop("No words found in any files after processing. Cannot continue.")
+}
+
+# 6. Plot top 10 words per file
+if (nrow(freq_df %>% filter(freq > 0)) > 0) {
+  
+  # Prepare data for plotting:
+  # 1. Get top 10 words per file
+  # 2. For each file, reorder the 'word' factor by frequency.
+  #    This ensures that in coord_flip plots, higher frequency words appear at the top.
+  plot_data_section6 <- freq_df %>%
+    group_by(file) %>%
+    arrange(desc(freq)) %>%
+    slice_head(n = 10) %>%
+    # Reorder the 'word' factor by 'freq' within each 'file' group.
+    # reorder() creates factor levels sorted by the second argument (freq).
+    mutate(word = reorder(word, freq)) %>% 
+    ungroup()
+
+  top_words_plot <- ggplot(plot_data_section6, aes(x = word, y = freq, fill = file)) +
+    geom_col(show.legend = FALSE) +
+    # Use free_y because after coord_flip, the 'word' categories are on the y-axis,
+    # and their scale (which words are present and their order) should be independent per facet.
+    facet_wrap(~ file, scales = "free_y") + 
+    coord_flip() +
+    labs(title = "Top 10 Most Frequent Words per File", x = "Word", y = "Frequency") +
+    theme_minimal() +
+    theme(strip.text = element_text(size = 7)) # Adjust facet label size if many files
+
+  print(top_words_plot)
+} else {
+  print("No word frequencies to plot for top words.")
+}
+
+
+# 7. Pivot to wide for comparison & stats
+merged_freqs <- freq_df %>%
+  select(word, file, freq) %>%
+  pivot_wider(names_from = file,
+              values_from = freq,
+              values_fill = 0)
+
+# 8. Chi-square test for overall difference between first two files
+if (length(file_list) >= 2) {
+  file1_name <- basename(file_list[1])
+  file2_name <- basename(file_list[2])
+
+  if (file1_name %in% colnames(merged_freqs) && file2_name %in% colnames(merged_freqs)) {
+    file1_counts_vec <- merged_freqs[[file1_name]]
+    file2_counts_vec <- merged_freqs[[file2_name]]
+
+    if (is.numeric(file1_counts_vec) && is.numeric(file2_counts_vec)) {
+      chisq_input_matrix <- rbind(file1_counts_vec, file2_counts_vec)
+      valid_cols <- colSums(chisq_input_matrix) > 0
+      chisq_input_matrix_filtered <- chisq_input_matrix[, valid_cols, drop = FALSE]
+
+      if (ncol(chisq_input_matrix_filtered) > 1 && sum(chisq_input_matrix_filtered) > 0 &&
+          all(rowSums(chisq_input_matrix_filtered) > 0) && all(colSums(chisq_input_matrix_filtered) > 0)) {
+        
+        chisq_result <- tryCatch({
+            chisq.test(chisq_input_matrix_filtered)
+        }, warning = function(w){
+            print(paste("Warning during Chi-square test:", w$message))
+            # If expected frequencies are low, suggest simulating p-value
+            if(grepl("Chi-squared approximation may be incorrect", w$message)){
+                print("Attempting Chi-square test with simulated p-value due to low expected frequencies.")
+                return(chisq.test(chisq_input_matrix_filtered, simulate.p.value = TRUE, B=10000)) # Increase B for better accuracy
+            }
+            return(chisq.test(chisq_input_matrix_filtered)) # return original if warning is different
+        }, error = function(e) {
+            print(paste("Error in Chi-square test:", e$message))
+            return(NULL)
+        })
+
+        if (!is.null(chisq_result)) {
+          print(paste("--- Overall Text Comparison (Chi-square Test) between:", file1_name, "and", file2_name, "---"))
+          print(chisq_result)
+          print(paste("The p-value from this Chi-squared test is:", format.pval(chisq_result$p.value, digits=3, eps=0.001)))
+          if (chisq_result$p.value < 0.05) {
+            print("Interpretation: A p-value < 0.05 suggests a statistically significant difference in the overall word frequency distributions between these two files.")
+          } else {
+            print("Interpretation: A p-value >= 0.05 suggests that there is not enough evidence to conclude a statistically significant difference in the overall word frequency distributions between these two files.")
+          }
+        }
+      } else {
+        print(paste("Skipping Chi-square test: Not enough data after filtering for files", file1_name, "and", file2_name))
+      }
+    } else {
+      print("Frequency columns for Chi-square are not numeric.")
+    }
+  } else {
+    print("One or both of the first two file columns not found for Chi-square test.")
+  }
+} else {
+  print("Less than two files, skipping Chi-square test.")
+}
+
+# --- NEW SECTION: 8B. Individual Word Proportion Tests (with P-values) ---
+if (length(file_list) >= 2) {
+  file1_name <- basename(file_list[1])
+  file2_name <- basename(file_list[2])
+
+  if (file1_name %in% colnames(merged_freqs) && file2_name %in% colnames(merged_freqs)) {
+    
+    # Calculate total words in each of the first two files
+    # These totals are needed for proportion tests
+    total_words_file1 <- sum(merged_freqs[[file1_name]])
+    total_words_file2 <- sum(merged_freqs[[file2_name]])
+
+    if (total_words_file1 > 0 && total_words_file2 > 0) {
+      # Identify words present in at least one of the two files
+      words_to_test <- merged_freqs %>%
+        filter(.data[[file1_name]] > 0 | .data[[file2_name]] > 0) %>%
+        pull(word)
+
+      if (length(words_to_test) > 0) {
+        word_comparison_results <- lapply(words_to_test, function(current_word) {
+          k1 <- merged_freqs[merged_freqs$word == current_word, file1_name, drop = TRUE]
+          k2 <- merged_freqs[merged_freqs$word == current_word, file2_name, drop = TRUE]
+          
+          # Perform two-sample proportion test
+          # prop.test can give warnings if counts are low, use tryCatch
+          prop_test_res <- tryCatch({
+            prop.test(x = c(k1, k2), n = c(total_words_file1, total_words_file2))
+          }, warning = function(w){ # Catch warnings, e.g. "Chi-squared approximation may be incorrect"
+              # print(paste("Warning for word '", current_word, "': ", w$message, sep=""))
+              # For simple prop.test, if counts are very small, Fisher's exact test might be preferred,
+              # but prop.test is generally robust. We'll proceed with its result.
+              # To suppress warning in output but still run: suppressWarnings(prop.test(...))
+              # Or return NA for p-value if warning is problematic
+              test_with_warning <- prop.test(x = c(k1, k2), n = c(total_words_file1, total_words_file2))
+              return(test_with_warning)
+          }, error = function(e) {
+            # print(paste("Error in prop.test for word '", current_word, "': ", e$message, sep=""))
+            return(NULL) # Return NULL if test fails
+          })
+
+          if (!is.null(prop_test_res)) {
+            return(data.frame(
+              word = current_word,
+              freq_file1 = k1,
+              prop_file1 = k1 / total_words_file1,
+              freq_file2 = k2,
+              prop_file2 = k2 / total_words_file2,
+              p_value = prop_test_res$p.value,
+              stringsAsFactors = FALSE
+            ))
+          } else {
+            return(NULL)
+          }
+        })
+
+        word_comparison_df <- bind_rows(word_comparison_results)
+
+        if (nrow(word_comparison_df) > 0) {
+          word_comparison_df <- word_comparison_df %>%
+            arrange(p_value) # Sort by p-value to see most significant first
+
+          print(paste("--- Individual Word Proportion Tests between:", file1_name, "and", file2_name, "---"))
+          print("The following table shows words and the p-value from a two-sample proportion test.")
+          print(paste("A small p-value (< 0.05) suggests the word's proportion is significantly different between", file1_name, "and", file2_name,"."))
+          
+          # Print a summary, e.g., top N significant words or just head
+          print(head(word_comparison_df, 20)) # Print top 20 by p-value
+
+          # Optionally, save to CSV
+          # write.csv(word_comparison_df, "word_proportion_comparison.csv", row.names = FALSE)
+
+          print("NOTE on Multiple Comparisons: When testing many words, some may appear significant by chance.")
+          print("Consider using adjusted p-values (e.g., Bonferroni, FDR) for more rigorous analysis if making many claims.")
+          
+        } else {
+          print("No words suitable for individual proportion tests after filtering.")
+        }
+      } else {
+        print("No words found with counts > 0 in either of the first two files to compare.")
+      }
+    } else {
+      print("Cannot perform individual word proportion tests: one or both of the first two files have zero total words.")
+    }
+  } else {
+    print("One or both of the first two file columns not found for individual word proportion tests.")
+  }
+} else {
+  print("Less than two files, skipping individual word proportion tests.")
+}
+
+
+# 9. Confidence Intervals for top 10 words (first file)
+if (length(file_list) > 0) {
+  first_file_basename <- basename(file_list[1])
+
+  first_file_data <- freq_df %>%
+    filter(file == first_file_basename)
+
+  if (nrow(first_file_data) > 0) {
+    total_words_first_file <- sum(first_file_data$freq)
+
+    if (total_words_first_file > 0) {
+      top10_first_file <- first_file_data %>%
+        arrange(desc(freq)) %>%
+        slice_head(n = 10)
+
+      if (nrow(top10_first_file) > 0) {
+        ci_data <- top10_first_file %>%
+          mutate(
+            proportion = freq / total_words_first_file,
+            lower = sapply(freq, function(k) {
+                if (k == 0) return(0)
+                binom.test(k, total_words_first_file)$conf.int[1]
+            }),
+            upper = sapply(freq, function(k) {
+                if (k == total_words_first_file && total_words_first_file > 0) return(1)
+                binom.test(k, total_words_first_file)$conf.int[2]
+            })
+          ) %>%
+          mutate(
+            lower = pmax(0, lower),
+            upper = pmin(1, upper)
+          )
+
+        # 10. CI Plot
+        ci_plot <- ci_data %>%
+          ggplot(aes(x = reorder(word, proportion), y = proportion)) +
+          geom_col(fill = "steelblue", alpha = 0.7) +
+          geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.25, color = "gray40") +
+          coord_flip() +
+          labs(
+            title = paste("Top 10 Words & 95% CIs in:", first_file_basename),
+            subtitle = paste("Total words in file:", total_words_first_file),
+            x = "Word",
+            y = "Proportion with 95% Confidence Interval"
+          ) +
+          theme_minimal() +
+          scale_y_continuous(labels = scales::percent_format(accuracy = 0.1))
+
+        print(ci_plot)
+      } else {
+        print(paste("No top words to plot for CI for file:", first_file_basename))
+      }
+    } else {
+      print(paste("Skipping CI calculation for", first_file_basename, "as it has no words."))
+    }
+  } else {
+    print(paste("No data found for the first file:", first_file_basename, "in freq_df."))
+  }
+} else {
+  print("No files processed, skipping CI calculation and plot.")
+}

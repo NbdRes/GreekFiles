@@ -1,0 +1,254 @@
+# Greek Text Analysis Tool
+# This script analyzes frequency of Greek characters in multiple text files
+
+# Load required libraries
+library(tcltk)
+library(ggplot2)
+library(dplyr)
+library(stringi)  # For Unicode normalization and accent removal
+
+# Function to select folder containing Greek text files
+select_folder <- function() {
+  folder_path <- tk_choose.dir(caption = "Select folder containing Greek text files")
+  if (is.na(folder_path)) {
+    stop("No folder selected. Exiting.")
+  }
+  return(folder_path)
+}
+
+# Function to get Greek characters input from user
+get_greek_input <- function() {
+  # Create a dialog box for Greek character input
+  tt <- tktoplevel()
+  tkwm.title(tt, "Enter Greek Characters")
+  
+  # Set encoding to handle Greek characters
+  tkfocus(tt)
+  
+  # Create entry widget
+  entry_var <- tclVar("")
+  entry_widget <- tkentry(tt, textvariable = entry_var, width = 30, font = c("Arial", 12))
+  
+  # Create labels and buttons
+  label1 <- tklabel(tt, text = "Enter Greek characters to search for:")
+  label2 <- tklabel(tt, text = "(e.g., θεός, λόγος, ἀρχή - accents will be ignored)")
+  label3 <- tklabel(tt, text = "Search is case-sensitive but ignores all diacritics")
+  
+  # Variable to store result
+  result <- NULL
+  
+  # OK button function
+  ok_function <- function() {
+    result <<- tclvalue(entry_var)
+    tkdestroy(tt)
+  }
+  
+  # Cancel button function
+  cancel_function <- function() {
+    result <<- NA
+    tkdestroy(tt)
+  }
+  
+  ok_button <- tkbutton(tt, text = "OK", command = ok_function)
+  cancel_button <- tkbutton(tt, text = "Cancel", command = cancel_function)
+  
+  # Pack widgets
+  tkpack(label1, padx = 10, pady = 5)
+  tkpack(label2, padx = 10, pady = 2)
+  tkpack(label3, padx = 10, pady = 2)
+  tkpack(entry_widget, padx = 10, pady = 10)
+  tkpack(ok_button, side = "left", padx = 10, pady = 10)
+  tkpack(cancel_button, side = "right", padx = 10, pady = 10)
+  
+  # Wait for user input
+  tkwait.window(tt)
+  
+  if (is.na(result) || result == "") {
+    stop("No characters entered. Exiting.")
+  }
+  
+  return(result)
+}
+
+# Function to remove Greek accents and diacritics
+remove_greek_accents <- function(text) {
+  # Convert to UTF-8
+  text <- enc2utf8(text)
+  
+  # Normalize Unicode (NFD = decomposed form)
+  text_nfd <- stri_trans_nfd(text)
+  
+  # Remove combining diacritical marks (accents, breathing marks, etc.)
+  # Unicode ranges for combining marks: \u0300-\u036F, \u1AB0-\u1AFF, \u1DC0-\u1DFF
+  text_no_accents <- stri_replace_all_regex(text_nfd, "[\\u0300-\\u036F\\u1AB0-\\u1AFF\\u1DC0-\\u1DFF]", "")
+  
+  # Normalize back to composed form (NFC)
+  text_clean <- stri_trans_nfc(text_no_accents)
+  
+  return(text_clean)
+}
+
+# Function to count character occurrences in text (ignoring accents)
+count_characters <- function(text, search_chars) {
+  # Convert to UTF-8 to handle Greek characters properly
+  text <- enc2utf8(text)
+  search_chars <- enc2utf8(search_chars)
+  
+  # Remove accents from both text and search string
+  text_clean <- remove_greek_accents(text)
+  search_clean <- remove_greek_accents(search_chars)
+  
+  # Count exact matches
+  count <- length(gregexpr(search_clean, text_clean, fixed = TRUE)[[1]])
+  if (count == 1 && gregexpr(search_clean, text_clean, fixed = TRUE)[[1]][1] == -1) {
+    count <- 0
+  }
+  
+  return(count)
+}
+
+# Function to calculate normalized frequency (per 1000 characters)
+calculate_normalized_frequency <- function(count, total_chars) {
+  if (total_chars == 0) return(0)
+  return((count / total_chars) * 1000)
+}
+
+# Main analysis function
+analyze_greek_texts <- function() {
+  # Step 1: Select folder
+  cat("Step 1: Select folder containing Greek text files...\n")
+  folder_path <- select_folder()
+  cat("Selected folder:", folder_path, "\n")
+  
+  # Step 2: Get list of .txt files
+  txt_files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+  
+  if (length(txt_files) == 0) {
+    stop("No .txt files found in the selected folder.")
+  }
+  
+  cat("Found", length(txt_files), "text files\n")
+  
+  # Step 3: Get Greek characters to search for
+  cat("Step 2: Enter Greek characters to search for...\n")
+  search_chars <- get_greek_input()
+  cat("Searching for:", search_chars, "(ignoring accents)\n")
+  cat("Normalized search term:", remove_greek_accents(search_chars), "\n")
+  
+  # Step 4: Analyze each file
+  results <- data.frame(
+    file_name = character(),
+    absolute_count = numeric(),
+    total_characters = numeric(),
+    normalized_frequency = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  cat("Step 3: Analyzing files...\n")
+  
+  for (file_path in txt_files) {
+    file_name <- basename(file_path)
+    cat("Processing:", file_name, "\n")
+    
+    # Read file with UTF-8 encoding
+    tryCatch({
+      text <- readLines(file_path, encoding = "UTF-8", warn = FALSE)
+      text <- paste(text, collapse = " ")
+      
+      # Count occurrences
+      count <- count_characters(text, search_chars)
+      
+      # Calculate total characters (excluding spaces for more meaningful normalization)
+      total_chars <- nchar(gsub(" ", "", text))
+      
+      # Calculate normalized frequency
+      norm_freq <- calculate_normalized_frequency(count, total_chars)
+      
+      # Add to results
+      results <- rbind(results, data.frame(
+        file_name = file_name,
+        absolute_count = count,
+        total_characters = total_chars,
+        normalized_frequency = norm_freq,
+        stringsAsFactors = FALSE
+      ))
+      
+      cat("  - Found", count, "occurrences\n")
+      cat("  - Normalized frequency:", round(norm_freq, 2), "per 1000 characters\n")
+      
+    }, error = function(e) {
+      cat("  - Error reading file:", e$message, "\n")
+      results <<- rbind(results, data.frame(
+        file_name = file_name,
+        absolute_count = 0,
+        total_characters = 0,
+        normalized_frequency = 0,
+        stringsAsFactors = FALSE
+      ))
+    })
+  }
+  
+  # Step 5: Display results
+  cat("\n=== RESULTS SUMMARY ===\n")
+  print(results)
+  
+  # Step 6: Create visualization
+  cat("\nStep 4: Creating visualization...\n")
+  
+  # Create bar plot for absolute counts
+  p1 <- ggplot(results, aes(x = reorder(file_name, absolute_count), y = absolute_count)) +
+    geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+    coord_flip() +
+    labs(
+      title = paste("Absolute Count of '", search_chars, "' in Each File (Ignoring Accents)", sep = ""),
+      x = "File Name",
+      y = "Absolute Count"
+    ) +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 8))
+  
+  # Create bar plot for normalized frequencies
+  p2 <- ggplot(results, aes(x = reorder(file_name, normalized_frequency), y = normalized_frequency)) +
+    geom_bar(stat = "identity", fill = "darkgreen", alpha = 0.7) +
+    coord_flip() +
+    labs(
+      title = paste("Normalized Frequency of '", search_chars, "' in Each File", sep = ""),
+      subtitle = "Frequency per 1000 characters (excluding spaces)",
+      x = "File Name",
+      y = "Frequency per 1000 Characters"
+    ) +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 8))
+  
+  # Display plots
+  print(p1)
+  print(p2)
+  
+  # Return results for further analysis if needed
+  return(results)
+}
+
+# Run the analysis
+cat("=== Greek Text Character Analysis Tool ===\n")
+cat("This tool will:\n")
+cat("1. Ask you to select a folder containing Greek .txt files\n")
+cat("2. Ask you to enter Greek characters to search for\n")
+cat("3. Count occurrences in each file\n")
+cat("4. Calculate normalized frequencies\n")
+cat("5. Display results graphically\n\n")
+
+# Execute the main function
+results <- analyze_greek_texts()
+
+# Optional: Save results to CSV
+save_results <- tkmessageBox(
+  title = "Save Results", 
+  message = "Do you want to save the results to a CSV file?",
+  type = "yesno"
+)
+
+if (tclvalue(save_results) == "yes") {
+  output_file <- file.path(dirname(txt_files[1]), "greek_analysis_results.csv")
+  write.csv(results, output_file, row.names = FALSE, fileEncoding = "UTF-8")
+  cat("Results saved to:", output_file, "\n")
+}

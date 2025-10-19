@@ -1,0 +1,67 @@
+# Load required libraries
+library(stringr)
+library(rstudioapi)
+library(officer)
+
+# Function to clean text
+clean_text <- function(text) {
+  # Keep only Greek letters (both uppercase and lowercase)
+  cleaned <- str_replace_all(text, "[^\\p{Greek}\\s]", "")
+  # Remove extra whitespace
+  cleaned <- str_squish(cleaned)
+  return(cleaned)
+}
+
+# Open folder dialog for directory selection
+input_dir <- rstudioapi::selectDirectory(
+  caption = "Select folder containing files to clean"
+)
+
+if (length(input_dir) == 0 || is.null(input_dir)) {
+  stop("No folder selected. Exiting program.")
+}
+
+# Get list of all .txt and .docx files in the directory
+txt_files <- list.files(path = input_dir, pattern = "\\.txt$", full.names = TRUE)
+docx_files <- list.files(path = input_dir, pattern = "\\.docx$", full.names = TRUE)
+all_files <- c(txt_files, docx_files)
+
+if (length(all_files) == 0) {
+  stop("No .txt or .docx files found in the selected folder. Exiting program.")
+}
+
+cat(paste("Found", length(all_files), "files to process.\n"))
+
+# Process each file
+for (input_file in all_files) {
+  cat(paste("\nProcessing:", basename(input_file), "\n"))
+  
+  # Determine file type and read the input file
+  if (grepl("\\.txt$", input_file)) {
+    text <- readLines(input_file, warn = FALSE)
+  } else if (grepl("\\.docx$", input_file)) {
+    doc <- read_docx(input_file)
+    text <- docx_summary(doc)$text
+  } else {
+    cat("Skipping unsupported file type.\n")
+    next
+  }
+  
+  cat("File has been read successfully.\n")
+  
+  # Clean the text
+  cleaned_text <- sapply(text, clean_text)
+  cat("Text has been cleaned.\n")
+  
+  # Write the cleaned text back to the original file
+  tryCatch({
+    writeLines(cleaned_text, input_file)
+    cat(paste("Cleaned text saved to:", basename(input_file), "\n"))
+  },
+  error = function(e) {
+    cat(paste("Error writing to file:", basename(input_file), "-", e$message, "\n"))
+  })
+}
+
+cat("\n=== Processing complete ===\n")
+cat(paste("Total files processed:", length(all_files), "\n"))

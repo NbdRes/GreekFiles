@@ -1,6 +1,5 @@
 # ═══════════════════════════════════════════════════════════
-# ניתוח ציטוטים מהיר - גרסת Hash-Based
-# פי 100-1000 יותר מהיר מהגרסה הקודמת!
+# ניתוח ציטוטים מהיר - גרסה יציבה ללא Shiny
 # ═══════════════════════════════════════════════════════════
 
 # התקנת חבילות
@@ -96,6 +95,61 @@ select_target_folder <- function() {
   return(folder_path)
 }
 
+# ═══════════════════════════════════════════════════════════
+# בחירת פרמטרים - קונסול פשוט (יציב ב-macOS M1)
+# ═══════════════════════════════════════════════════════════
+
+get_analysis_parameters <- function(source_file, target_folder) {
+  
+  message("\n╔════════════════════════════════════════════════╗")
+  message("║  שלב 3: הגדרת פרמטרים                         ║")
+  message("╚════════════════════════════════════════════════╝\n")
+  
+  # יצירת שם ברירת מחדל
+  source_name <- tools::file_path_sans_ext(basename(source_file))
+  target_name <- basename(target_folder)
+  default_name <- paste(source_name, target_name, sep = "-")
+  
+  # שם הבדיקה
+  cat("שם הבדיקה [ברירת מחדל:", default_name, "]: ")
+  analysis_name <- readline()
+  if (analysis_name == "" || is.null(analysis_name)) {
+    analysis_name <- default_name
+  }
+  
+  # N-gram size
+  cat("מספר מילים ב-n-gram [ברירת מחדל: 6]: ")
+  ngram_input <- readline()
+  if (ngram_input == "" || is.null(ngram_input)) {
+    ngram_size <- 6
+  } else {
+    ngram_size <- as.integer(ngram_input)
+    if (is.na(ngram_size) || ngram_size < 3 || ngram_size > 20) {
+      message("ערך לא תקין, משתמש בברירת מחדל: 6")
+      ngram_size <- 6
+    }
+  }
+  
+  # Similarity threshold
+  cat("סף דמיון מינימלי 0-1 [ברירת מחדל: 0.95]: ")
+  similarity_input <- readline()
+  if (similarity_input == "" || is.null(similarity_input)) {
+    similarity <- 0.95
+  } else {
+    similarity <- as.numeric(similarity_input)
+    if (is.na(similarity) || similarity < 0.5 || similarity > 1.0) {
+      message("ערך לא תקין, משתמש בברירת מחדל: 0.95")
+      similarity <- 0.95
+    }
+  }
+  
+  return(list(
+    name = analysis_name,
+    ngram_size = ngram_size,
+    similarity = similarity
+  ))
+}
+
 fast_read_file <- function(file_path) {
   tryCatch({
     content <- readLines(file_path, warn = FALSE, encoding = "UTF-8")
@@ -114,13 +168,13 @@ clean_text <- function(text, remove_accents = TRUE) {
 }
 
 # ═══════════════════════════════════════════════════════════
-# זיהוי ציטוטים - גרסה מהירה עם Hash Table
+# זיהוי ציטוטים
 # ═══════════════════════════════════════════════════════════
 
-detect_citations_fast <- function(source_text, target_files, ngram_size = 5) {
+detect_citations_fast <- function(source_text, target_files, ngram_size = 6, similarity_threshold = 0.95) {
   
   message("\n╔════════════════════════════════════════════════╗")
-  message("║  שלב 3: ניתוח ציטוטים (אלגוריתם מהיר)        ║")
+  message("║  שלב 4: ניתוח ציטוטים                         ║")
   message("╚════════════════════════════════════════════════╝")
   
   message("\nמכין את טקסט המקור...")
@@ -129,8 +183,6 @@ detect_citations_fast <- function(source_text, target_files, ngram_size = 5) {
   source_words <- source_words[nchar(source_words) > 0]
   
   message(paste("  • טקסט המקור:", format(length(source_words), big.mark = ","), "מילים"))
-  
-  # בניית Hash Table (זה החלק המהפכני!)
   message(paste("  • בונה hash table של n-grams (n =", ngram_size, ")..."))
   
   source_ngrams_hash <- new.env(hash = TRUE, size = length(source_words))
@@ -145,7 +197,9 @@ detect_citations_fast <- function(source_text, target_files, ngram_size = 5) {
   }
   
   message(paste("  • נוצרו", format(ngram_count, big.mark = ","), "n-grams ייחודיים"))
-  message("  • מצב: חיפוש מדויק עם hash lookup O(1)")
+  message(paste("  • סף דמיון:", similarity_threshold * 100, "%"))
+  
+  use_fuzzy <- similarity_threshold < 1.0
   
   process_file_fast <- function(target_file_info) {
     target_file <- target_file_info$path
@@ -167,23 +221,17 @@ detect_citations_fast <- function(source_text, target_files, ngram_size = 5) {
     if (length(target_words) < ngram_size) return(NULL)
     
     matches <- list()
-    found_positions <- c()  # למנוע כפילויות
+    found_positions <- c()
     
-    # חיפוש מהיר: O(m) במקום O(n*m)
     for (j in 1:(length(target_words) - ngram_size + 1)) {
-      # דלג על אזורים שכבר נמצאו
       if (j %in% found_positions) next
       
       target_ngram <- paste(target_words[j:(j + ngram_size - 1)], collapse = " ")
       
-      # חיפוש O(1) ב-hash table!
       if (exists(target_ngram, envir = source_ngrams_hash)) {
         source_pos <- source_ngrams_hash[[target_ngram]]
-        
-        # סמן את האזור כנמצא
         found_positions <- c(found_positions, (j):(j + ngram_size - 1))
         
-        # הוסף הקשר
         source_context_start <- max(1, source_pos - 5)
         source_context_end <- min(length(source_words), source_pos + ngram_size + 4)
         source_context <- paste(source_words[source_context_start:source_context_end], collapse = " ")
@@ -240,7 +288,7 @@ detect_citations_fast <- function(source_text, target_files, ngram_size = 5) {
 }
 
 # ═══════════════════════════════════════════════════════════
-# יצירת תוצרים (זהה)
+# יצירת תוצרים (כל הפונקציות מהגרסאות הקודמות)
 # ═══════════════════════════════════════════════════════════
 
 create_excel_output <- function(results, output_path) {
@@ -355,7 +403,7 @@ create_citation_network <- function(results, output_path) {
 }
 
 create_ngram_heatmap <- function(results, output_path) {
-  if (length(results) == 0) return(NULL)
+  if (length(results) == 0 || length(unique(unlist(lapply(results, function(df) df$ngram_length)))) < 2) return(NULL)
   
   all_docs <- names(results)
   ngram_data <- data.frame()
@@ -450,19 +498,19 @@ create_citation_treemap <- function(results, output_path) {
 # פונקציה ראשית
 # ═══════════════════════════════════════════════════════════
 
-run_analysis_fast <- function(ngram_size = 5) {
+run_analysis_interactive <- function() {
   
   message("\n╔════════════════════════════════════════════════╗")
-  message("║    ניתוח ציטוטים מהיר - Hash-Based Algorithm  ║")
-  message("╚════════════════════════════════════════════════╝")
-  message("\nפרמטרים:")
-  message(paste("  • אורך n-gram:", ngram_size, "מילים"))
-  message("  • הסרת אקסנטים: כן")
-  message("  • אלגוריתם: Hash lookup O(1)")
-  message("")
+  message("║         ניתוח ציטוטים - מצב אינטראקטיבי      ║")
+  message("╚════════════════════════════════════════════════╝\n")
   
   source_file <- select_source_file()
   target_folder <- select_target_folder()
+  params <- get_analysis_parameters(source_file, target_folder)
+  
+  message(paste("\n✓ שם הבדיקה:", params$name))
+  message(paste("✓ N-gram:", params$ngram_size, "מילים"))
+  message(paste("✓ סף דמיון:", params$similarity))
   
   message("\n════════════════════════════════════════════════")
   message("קורא קובץ מקור...")
@@ -479,7 +527,9 @@ run_analysis_fast <- function(ngram_size = 5) {
   
   start_time <- Sys.time()
   
-  results <- detect_citations_fast(source_text, target_files, ngram_size)
+  results <- detect_citations_fast(source_text, target_files, 
+                                   ngram_size = params$ngram_size,
+                                   similarity_threshold = params$similarity)
   
   end_time <- Sys.time()
   time_taken <- round(difftime(end_time, start_time, units = "mins"), 2)
@@ -492,15 +542,14 @@ run_analysis_fast <- function(ngram_size = 5) {
   }
   
   message("\n╔════════════════════════════════════════════════╗")
-  message("║  שלב 4: יצירת תוצרים                          ║")
+  message("║  שלב 5: יצירת תוצרים                          ║")
   message("╚════════════════════════════════════════════════╝")
   
-  output_folder <- file.path(dirname(source_file), paste0("citations_", format(Sys.time(), "%Y%m%d_%H%M")))
+  output_folder <- file.path(dirname(source_file), params$name)
   dir.create(output_folder, showWarnings = FALSE)
   
   message(paste("\nיוצר תיקיית פלט:", basename(output_folder)))
   
-  # Excel & CSV
   excel_path <- file.path(output_folder, "results.xlsx")
   create_excel_output(results, excel_path)
   
@@ -515,7 +564,6 @@ run_analysis_fast <- function(ngram_size = 5) {
   write.csv(stats_df[order(-stats_df$citations), ], stats_path, row.names = FALSE, fileEncoding = "UTF-8")
   message(paste("✓ CSV:", basename(stats_path)))
   
-  # ויזואליזציות
   create_basic_graph(results, file.path(output_folder, "01_top_documents.png"))
   create_citation_network(results, file.path(output_folder, "02_citation_network.html"))
   create_ngram_heatmap(results, file.path(output_folder, "03_ngram_heatmap.png"))
@@ -527,17 +575,20 @@ run_analysis_fast <- function(ngram_size = 5) {
   message("║              ✓ הושלם בהצלחה!                  ║")
   message("╚════════════════════════════════════════════════╝")
   message("\nסיכום:")
+  message(paste("  • שם:", params$name))
+  message(paste("  • N-gram:", params$ngram_size))
+  message(paste("  • סף דמיון:", params$similarity))
   message(paste("  • מסמכים:", length(results)))
   message(paste("  • ציטוטים:", sum(sapply(results, nrow))))
   message(paste("  • זמן:", time_taken, "דקות"))
   message(paste("  • תיקייה:", basename(output_folder)))
   message("")
   
-  return(list(results = results, folder = output_folder))
+  return(list(results = results, folder = output_folder, params = params))
 }
 
 # ═══════════════════════════════════════════════════════════
-# הרצה - צריך לסיים ב-MINUTES במקום DAYS!
+# הרצה
 # ═══════════════════════════════════════════════════════════
 
-run_analysis_fast(ngram_size = 5)
+run_analysis_interactive()

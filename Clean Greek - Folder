@@ -1,12 +1,23 @@
-# Load required libraries
-library(stringr)
-library(rstudioapi)
-library(officer)
+# Required packages
+required_packages <- c("stringr", "stringi", "rstudioapi")
 
-# Function to clean text
+# Check and install packages if needed
+for (pkg in required_packages) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    cat(paste("Installing package:", pkg, "\n"))
+    install.packages(pkg)
+    library(pkg, character.only = TRUE)
+  }
+}
+
+# Function to clean text - remove accents from Greek text
 clean_text <- function(text) {
-  # Keep only Greek letters (both uppercase and lowercase)
-  cleaned <- str_replace_all(text, "[^\\p{Greek}\\s]", "")
+  # Normalize to NFD (decompose accented characters)
+  normalized <- stringi::stri_trans_general(text, "NFD")
+  # Remove combining diacritical marks (U+0300 to U+036F)
+  cleaned <- str_replace_all(normalized, "[\\u0300-\\u036f]", "")
+  # Keep only Greek letters
+  cleaned <- str_replace_all(cleaned, "[^\\p{Greek}\\s]", "")
   # Remove extra whitespace
   cleaned <- str_squish(cleaned)
   return(cleaned)
@@ -14,48 +25,37 @@ clean_text <- function(text) {
 
 # Open folder dialog for directory selection
 input_dir <- rstudioapi::selectDirectory(
-  caption = "Select folder containing files to clean"
+  caption = "Select folder containing TXT files to clean"
 )
 
 if (length(input_dir) == 0 || is.null(input_dir)) {
   stop("No folder selected. Exiting program.")
 }
 
-# Get list of all .txt and .docx files in the directory
+# Get list of all .txt files in the directory
 txt_files <- list.files(path = input_dir, pattern = "\\.txt$", full.names = TRUE)
-docx_files <- list.files(path = input_dir, pattern = "\\.docx$", full.names = TRUE)
-all_files <- c(txt_files, docx_files)
 
-if (length(all_files) == 0) {
-  stop("No .txt or .docx files found in the selected folder. Exiting program.")
+if (length(txt_files) == 0) {
+  stop("No .txt files found in the selected folder. Exiting program.")
 }
 
-cat(paste("Found", length(all_files), "files to process.\n"))
+cat(paste("Found", length(txt_files), "files to process.\n"))
 
 # Process each file
-for (input_file in all_files) {
+for (input_file in txt_files) {
   cat(paste("\nProcessing:", basename(input_file), "\n"))
   
-  # Determine file type and read the input file
-  if (grepl("\\.txt$", input_file)) {
-    text <- readLines(input_file, warn = FALSE)
-  } else if (grepl("\\.docx$", input_file)) {
-    doc <- read_docx(input_file)
-    text <- docx_summary(doc)$text
-  } else {
-    cat("Skipping unsupported file type.\n")
-    next
-  }
-  
+  # Read the input file with UTF-8 encoding
+  text <- readLines(input_file, warn = FALSE, encoding = "UTF-8")
   cat("File has been read successfully.\n")
   
   # Clean the text
-  cleaned_text <- sapply(text, clean_text)
+  cleaned_text <- sapply(text, clean_text, USE.NAMES = FALSE)
   cat("Text has been cleaned.\n")
   
   # Write the cleaned text back to the original file
   tryCatch({
-    writeLines(cleaned_text, input_file)
+    writeLines(cleaned_text, input_file, useBytes = FALSE)
     cat(paste("Cleaned text saved to:", basename(input_file), "\n"))
   },
   error = function(e) {
@@ -64,4 +64,4 @@ for (input_file in all_files) {
 }
 
 cat("\n=== Processing complete ===\n")
-cat(paste("Total files processed:", length(all_files), "\n"))
+cat(paste("Total files processed:", length(txt_files), "\n"))

@@ -1,0 +1,191 @@
+# ==============================================================================
+# שלב 2: Set Intersection - חיפוש התאמות (גרסה יציבה)
+# ==============================================================================
+
+suppressPackageStartupMessages({
+  if (!requireNamespace("rstudioapi", quietly=TRUE)) install.packages("rstudioapi")
+  if (!requireNamespace("dplyr", quietly=TRUE)) install.packages("dplyr")
+  if (!requireNamespace("data.table", quietly=TRUE)) install.packages("data.table") # לביצועים מהירים
+})
+
+library(rstudioapi)
+library(dplyr)
+library(tools)
+
+cat("=== שלב 2: זיהוי התאמות (Set Intersection) ===\n\n")
+
+# ===== 1. הגדרות ונתיבים =====
+
+# נסיון חכם לאתר את תיקיית הפרויקט (אם הרצת את שלב 1 הרגע)
+if (exists("output_dir")) {
+  project_dir <- output_dir
+} else {
+  project_dir <- rstudioapi::selectDirectory(caption = "בחר את תיקיית הפרויקט (התיקייה שבה נוצרו bpe_encoded וכו')")
+}
+
+bpe_dir <- file.path(project_dir, "bpe_encoded")
+if (!dir.exists(bpe_dir)) stop("❌ לא נמצאה תיקיית bpe_encoded! וודא שבחרת את התיקייה הנכונה.")
+
+# הגדרות ברירת מחדל (או טעינה מ-config אם קיים)
+config_file <- file.path(project_dir, "config_bpe.rds")
+if (file.exists(config_file)) {
+  config <- readRDS(config_file)
+  BPE_SEP <- config$bpe_sep
+} else {
+  BPE_SEP <- "\u25AA" # ברירת מחדל: ריבוע שחור
+}
+
+# פרמטרים לחיפוש
+WINDOW_SIZE <- 50L      # גודל החלון בקובץ היעד
+MIN_TOKENS <- 5L        # מינימום טוקנים משותפים כדי להחשיב כהתאמה
+MIN_OVERLAP_PCT <- 20L  # אחוז חפיפה מינימלי
+BATCH_SIZE <- 200L      # גודל אצווה
+
+# ===== 2. בחירת קובץ המקור =====
+
+cat("\n--- בחירת טקסט מקור להשוואה ---\n")
+cat("ייפתח חלון לבחירת קובץ המקור (מתוך תיקיית bpe_encoded)...\n")
+
+source_file <- rstudioapi::selectFile(
+  caption = "בחר את קובץ המקור (הטקסט שאתה מחפש ציטוטים שלו)",
+  path = bpe_dir,
+  filter = "Text Files (*.txt)",
+  existing = TRUE
+)
+
+if (is.null(source_file) || is.na(source_file)) stop("לא נבחר קובץ מקור.")
+
+# יצירת תיקיית תוצאות ייעודית לקובץ הזה
+source_name <- file_path_sans_ext(basename(source_file))
+results_dir <- file.path(project_dir, paste0("results_setint_", source_name))
+if (!dir.exists(results_dir)) dir.create(results_dir, recursive = TRUE)
+
+cat(sprintf("✓ המקור נבחר: %s\n", source_name))
+cat(sprintf("✓ התוצאות יישמרו ב: %s\n", basename(results_dir)))
+
+# ===== 3. הכנת נתונים =====
+
+# פונקציית קריאה ופיצול
+read_and_split <- function(path) {
+  # קריאה בינארית מהירה
+  con <- file(path, open = "rb")
+  size <- file.info(path)$size
+  if (is.na(size) || size == 0) { close(con); return(character(0)) }
+  txt <- rawToChar(readBin(con, "raw", n = size))
+  close(con)
+  
+  # פיצול לפי המפריד
+  tokens <- unlist(strsplit(txt, BPE_SEP))
+  return(tokens[tokens != ""])
+}
+
+cat("› טוען את קובץ המקור לזיכרון... ")
+source_tokens <- read_and_split(source_file)
+source_set <- unique(source_tokens) # Set לחיפוש מהיר O(1)
+cat(sprintf("✓ (%d טוקנים ייחודיים)\n", length(source_set)))
+
+# רשימת קבצי יעד (כל התיקייה, למעט המקור עצמו)
+target_files <- list.files(bpe_dir, pattern = "\\.txt$", full.names = TRUE, recursive = TRUE)
+target_files <- target_files[normalizePath(target_files) != normalizePath(source_file)]
+
+if (length(target_files) == 0) stop("לא נמצאו קבצים להשוואה!")
+
+# ===== 4. לוגיקת RESUME וניהול אצוות =====
+
+all_batches <- split(target_files, ceiling(seq_along(target_files) / BATCH_SIZE))
+total_batches <- length(all_batches)
+
+# בדיקה מה כבר בוצע
+done_files <- list.files(results_dir, pattern = "batch_.*_results\\.rds$")
+done_ids <- as.integer(gsub("batch_|_results\\.rds", "", done_files))
+
+if (length(done_ids) > 0) {
+  start_batch <- max(done_ids) + 1
+  cat(sprintf("✓ נמצאו %d אצוות מוכנות. ממשיך מאצווה %d...\n", length(done_ids), start_batch))
+} else {
+  start_batch <- 1
+}
+
+if (start_batch > total_batches) {
+  cat("\n🎉 כל ההשוואות עבור קובץ זה כבר בוצעו!\nעבור לשלב 3 (איחוד תוצאות).\n")
+} else {
+
+  # ===== 5. לולאת העיבוד (Core Logic) =====
+  
+  cat("\n🚀 מתחיל סריקה והשוואה...\n")
+  global_start <- Sys.time()
+  
+  for (b_idx in start_batch:total_batches) {
+    batch_files_list <- all_batches[[b_idx]]
+    batch_results <- list()
+    
+    cat(sprintf("[Batch %d/%d | %d קבצים] ", b_idx, total_batches, length(batch_files_list)))
+    
+    # עיבוד מקבילי לא אפשרי בקלות ב-RStudio רגיל ללא חבילות מורכבות, 
+    # אז נשתמש בלולאה רגילה אך יעילה.
+    
+    hits_in_batch <- 0
+    
+    for (f_path in batch_files_list) {
+      t_tokens <- read_and_split(f_path)
+      n_tokens <- length(t_tokens)
+      
+      if (n_tokens < MIN_TOKENS) next
+      
+      # --- לוגיקת Sliding Window ---
+      # אנו עוברים על קובץ היעד בחלונות
+      # כדי לייעל: נבדוק קודם אם יש בכלל חפיפה גלובלית מינימלית
+      intersect_global <- length(intersect(unique(t_tokens), source_set))
+      if (intersect_global < MIN_TOKENS) next 
+      
+      # אם יש פוטנציאל, רצים עם חלון
+      starts <- seq(1, max(1, n_tokens - WINDOW_SIZE + 1), by = 1)
+      
+      for (s in starts) {
+        e <- min(s + WINDOW_SIZE - 1, n_tokens)
+        window <- t_tokens[s:e]
+        
+        # בדיקה מהירה
+        shared <- window[window %in% source_set]
+        cnt <- length(shared)
+        
+        if (cnt >= MIN_TOKENS) {
+          pct <- (cnt / length(window)) * 100
+          if (pct >= MIN_OVERLAP_PCT) {
+            # נמצאה התאמה!
+            rel_name <- get_safe_relative_path(f_path, bpe_dir) # שימוש באותה לוגיקה משלב 1 אם הוגדרה, או basename
+            if(!exists("get_safe_relative_path")) rel_name <- sub(paste0("^", bpe_dir, "/"), "", f_path)
+
+            batch_results[[length(batch_results) + 1]] <- data.frame(
+              target_file = rel_name,
+              window_start = s,
+              window_end = e,
+              overlap_count = cnt,
+              overlap_pct = round(pct, 1),
+              shared_tokens = paste(unique(shared), collapse = " "),
+              stringsAsFactors = FALSE
+            )
+          }
+        }
+      }
+    }
+    
+    # שמירת תוצאות האצווה
+    if (length(batch_results) > 0) {
+      final_df <- do.call(rbind, batch_results)
+      hits_in_batch <- nrow(final_df)
+      saveRDS(final_df, file.path(results_dir, sprintf("batch_%04d_results.rds", b_idx)))
+    } else {
+      # שומרים קובץ ריק כדי לסמן שהאצווה בוצעה (חשוב ל-Resume!)
+      saveRDS(data.frame(), file.path(results_dir, sprintf("batch_%04d_results.rds", b_idx)))
+    }
+    
+    # סטטוס
+    elapsed <- difftime(Sys.time(), global_start, units = "mins")
+    pct_done <- round(100 * b_idx / total_batches, 1)
+    cat(sprintf("✓ נשמר (%d התאמות). %.1f%%\n", hits_in_batch, pct_done))
+  }
+  
+  cat("\n🏁 סיימנו את שלב 2!\n")
+  cat(sprintf("כל התוצאות שמורות בתיקייה: %s\n", basename(results_dir)))
+}

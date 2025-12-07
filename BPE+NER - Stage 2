@@ -1,0 +1,169 @@
+# ==============================================================================
+# שלב 2 (Turbo Mode): עיבוד מהיר עם data.table
+# ==============================================================================
+
+suppressPackageStartupMessages({
+  if (!requireNamespace("rstudioapi", quietly=TRUE)) install.packages("rstudioapi")
+  if (!requireNamespace("svDialogs", quietly=TRUE)) install.packages("svDialogs")
+  if (!requireNamespace("data.table", quietly=TRUE)) install.packages("data.table")
+})
+
+library(rstudioapi)
+library(svDialogs)
+library(tools)
+library(data.table)
+
+# הגדרת Threads למקסימום ביצועים
+setDTthreads(threads = parallel::detectCores() - 1)
+
+cat("=== שלב 2: מצב טורבו (data.table) ===\n\n")
+
+# ===== 1. הגדרות =====
+if (exists("output_dir")) {
+  project_dir <- output_dir
+} else {
+  project_dir <- rstudioapi::selectDirectory(caption = "בחר את תיקיית הפרויקט")
+}
+
+bpe_dir <- file.path(project_dir, "bpe_encoded")
+
+# בחירת מקור
+source_file <- rstudioapi::selectFile(caption = "בחר קובץ מקור", path = bpe_dir, filter = "Text Files (*.txt)")
+if (is.null(source_file)) stop("לא נבחר קובץ.")
+
+# פרמטרים
+res_w <- dlg_input("גודל חלון:", default = 40)$res
+res_m <- dlg_input("מינימום טוקנים:", default = 10)$res
+
+WINDOW_SIZE <- as.integer(if(length(res_w)) res_w else 40)
+MIN_TOKENS <- as.integer(if(length(res_m)) res_m else 10)
+
+# תיקיית תוצאות
+source_name <- file_path_sans_ext(basename(source_file))
+run_id <- sprintf("%s_W%d_M%d_Turbo", source_name, WINDOW_SIZE, MIN_TOKENS)
+results_dir <- file.path(project_dir, paste0("results_", run_id))
+if (!dir.exists(results_dir)) dir.create(results_dir, recursive = TRUE)
+
+# ===== 2. טעינת מקור =====
+config_file <- file.path(project_dir, "config_bpe.rds")
+BPE_SEP <- if(file.exists(config_file)) readRDS(config_file)$bpe_sep else "\u25AA"
+
+read_tokens_fast <- function(path) {
+  # קריאה מהירה מאוד
+  con <- file(path, open = "rb")
+  sz <- file.info(path)$size
+  if (is.na(sz) || sz == 0) { close(con); return(character(0)) }
+  txt <- rawToChar(readBin(con, "raw", n = sz))
+  close(con)
+  unlist(strsplit(txt, BPE_SEP, fixed = TRUE))
+}
+
+cat("› טוען מקור... ")
+source_tokens <- read_tokens_fast(source_file)
+# יצירת Hash Table מהיר לחיפוש
+source_set <- unique(source_tokens[source_tokens != ""])
+source_lookup <- data.table(token = source_set, key = "token")
+cat(sprintf("✓ (%d טוקנים)\n", nrow(source_lookup)))
+
+# ===== 3. עיבוד מהיר באצוות =====
+all_targets <- list.files(bpe_dir, pattern = "\\.txt$", full.names = TRUE, recursive = TRUE)
+all_targets <- all_targets[normalizePath(all_targets) != normalizePath(source_file)]
+
+BATCH_SIZE <- 50 # אפשר להגדיל חזרה כי העיבוד יעיל יותר
+batches <- split(all_targets, ceiling(seq_along(all_targets) / BATCH_SIZE))
+total_batches <- length(batches)
+
+done_files <- list.files(results_dir, pattern = "batch_.*_results\\.rds$")
+done_ids <- as.integer(gsub("batch_|_results\\.rds", "", done_files))
+start_batch <- if(length(done_ids) > 0) max(done_ids) + 1 else 1
+
+cat(sprintf("\n🚀 מתחיל הרצה טורבו: %d אצוות...\n", total_batches))
+
+for (b_idx in start_batch:total_batches) {
+  batch_files <- batches[[b_idx]]
+  
+  # טעינת כל האצווה לרשימה אחת (במקום לולאה איטית)
+  cat(sprintf("[Batch %d/%d] קורא קבצים... ", b_idx, total_batches))
+  
+  # שימוש ב-lapply מהיר
+  batch_data <- lapply(batch_files, function(f) {
+    toks <- read_tokens_fast(f)
+    if (length(toks) < MIN_TOKENS) return(NULL)
+    list(file = basename(f), tokens = toks)
+  })
+  
+  # סינון NULL
+  batch_data <- batch_data[!sapply(batch_data, is.null)]
+  
+  results_list <- list()
+  
+  if (length(batch_data) > 0) {
+    cat("מעבד... ")
+    
+    for (item in batch_data) {
+      t_tokens <- item$tokens
+      n <- length(t_tokens)
+      
+      # סינון מקדים מהיר בטירוף באמצעות match
+      # בודקים כמה טוקנים בקובץ קיימים במקור (פעולה וקטורית)
+      matches_idx <- which(t_tokens %in% source_set)
+      
+      if (length(matches_idx) < MIN_TOKENS) next
+      
+      # אם עבר סינון, רצים עם חלון רק סביב האזורים שיש בהם התאמות
+      # (אופטימיזציה: לא בודקים אזורים ריקים)
+      
+      # בניית מטריצת חלונות (Rolling Window)
+      starts <- 1:(n - WINDOW_SIZE + 1)
+      
+      # לולאה פנימית ב-C++ (באמצעות RcppRoll אם היה אפשר, אבל כאן נשתמש בלולאה פשוטה אך מהירה על וקטורים לוגיים)
+      # הטריק: להפוך את הטקסט לוקטור בוליאני (0/1) איפה שיש התאמה
+      is_match <- as.integer(t_tokens %in% source_set)
+      
+      # חישוב סכום רץ (Running Sum) - זה הסוד למהירות!
+      # במקום לבדוק חלון-חלון, מחשבים סכום מצטבר
+      cs <- cumsum(is_match)
+      # הסכום בחלון הוא: cs[end] - cs[start-1]
+      
+      # וקטור של סכומים בכל החלונות בבת אחת!
+      window_sums <- cs[WINDOW_SIZE:n] - c(0, cs[1:(n-WINDOW_SIZE)])
+      
+      # מוצאים את האינדקסים שעוברים את הסף
+      valid_starts <- which(window_sums >= MIN_TOKENS)
+      
+      if (length(valid_starts) > 0) {
+        # חילוץ התוצאות רק עבור החלונות הטובים
+        file_res <- lapply(valid_starts, function(s) {
+          e <- s + WINDOW_SIZE - 1
+          win <- t_tokens[s:e]
+          shared <- unique(win[win %in% source_set])
+          list(
+            target_file = item$file,
+            window_start = s,
+            window_end = e,
+            overlap_count = window_sums[s], # כבר חישבנו!
+            shared_tokens = paste(shared, collapse = " ")
+          )
+        })
+        results_list <- c(results_list, file_res)
+      }
+    }
+  }
+  
+  # שמירה
+  save_path <- file.path(results_dir, sprintf("batch_%04d_results.rds", b_idx))
+  
+  if (length(results_list) > 0) {
+    out_df <- rbindlist(results_list) # מהיר פי 100 מ-do.call(rbind)
+    saveRDS(out_df, save_path)
+    cat(sprintf("✓ %d התאמות.\n", nrow(out_df)))
+  } else {
+    saveRDS(data.frame(), save_path)
+    cat("✓ 0 התאמות.\n")
+  }
+  
+  rm(batch_data, results_list)
+  gc(verbose=FALSE)
+}
+
+cat("\n🏁 סיימנו!\n")

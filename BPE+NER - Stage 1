@@ -1,6 +1,3 @@
-# ==============================================================================
-# שלב 2: Set Intersection - חיפוש התאמות (גרסה יציבה)
-# ==============================================================================
 
 suppressPackageStartupMessages({
   if (!requireNamespace("rstudioapi", quietly=TRUE)) install.packages("rstudioapi")

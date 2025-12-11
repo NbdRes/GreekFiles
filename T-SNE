@@ -1,0 +1,172 @@
+# Load required libraries
+library(tcltk)
+library(stylo)
+library(ggplot2)
+
+# Progress tracking
+progress_msg <- function(msg) {
+  cat(paste0("[", format(Sys.time(), "%H:%M:%S"), "] ", msg, "\n"))
+  flush.console()
+}
+
+progress_msg("Starting t-SNE analysis with stylo...")
+
+# Select folder
+folder_path <- tk_choose.dir(caption = "Select folder with Ancient Greek texts")
+
+if (is.na(folder_path)) {
+  stop("No folder selected")
+}
+
+progress_msg(paste("Selected folder:", folder_path))
+
+# Change to the corpus directory
+setwd(folder_path)
+
+progress_msg("Loading texts and creating frequency table...")
+
+# Use stylo's optimized text loading
+freq_table <- stylo(
+  gui = FALSE,
+  corpus.dir = folder_path,
+  corpus.lang = "Other",
+  analyzed.features = "w",
+  ngram.size = 1,
+  mfw.min = 100,
+  mfw.max = 100,
+  distance.measure = "delta",
+  analysis.type = "PCR",
+  write.jpg.file = FALSE,
+  write.png.file = FALSE,
+  display.on.screen = FALSE
+)
+
+progress_msg("Frequency table created!")
+
+# Extract the data
+word_frequencies <- freq_table$table.with.all.freqs
+file_labels <- rownames(word_frequencies)
+
+progress_msg(paste("Loaded", nrow(word_frequencies), "documents"))
+
+# Run t-SNE
+library(Rtsne)
+
+n_docs <- nrow(word_frequencies)
+perplexity_val <- min(30, floor((n_docs - 1) / 3))
+
+progress_msg(paste("Running t-SNE with perplexity =", perplexity_val))
+
+set.seed(42)
+
+tsne_result <- Rtsne(
+  as.matrix(word_frequencies),
+  dims = 2,
+  perplexity = perplexity_val,
+  verbose = TRUE,
+  max_iter = 500,
+  theta = 0.5,
+  check_duplicates = FALSE,
+  num_threads = 0
+)
+
+progress_msg("t-SNE complete!")
+
+# Create data frame
+tsne_df <- data.frame(
+  X = tsne_result$Y[, 1],
+  Y = tsne_result$Y[, 2],
+  Label = file_labels
+)
+
+# ============================================
+# יצירת קבוצות צבע לפי שתי האותיות הראשונות
+# ============================================
+
+# חלץ שתי אותיות ראשונות מכל שם קובץ
+tsne_df$Group <- substr(file_labels, 1, 2)
+
+# הצג את הקבוצות שנמצאו
+unique_groups <- sort(unique(tsne_df$Group))
+progress_msg(paste("Found", length(unique_groups), "groups based on first 2 letters:"))
+progress_msg(paste("Groups:", paste(unique_groups, collapse = ", ")))
+
+# ============================================
+# התאמות גרפיות
+# ============================================
+
+# נקודות
+point_size <- 3
+point_alpha <- 0.7
+
+# תוויות טקסט
+text_size <- 3
+text_hjust <- 0
+text_vjust <- 0
+text_nudge_x <- 0.5
+text_nudge_y <- 0
+show_text_overlap <- TRUE
+
+# כותרות
+plot_title <- "t-SNE of Word-Frequency Vectors (Top 100 Terms)"
+plot_subtitle <- paste("Folder:", basename(folder_path), "| Colored by first 2 letters")
+x_axis_label <- "t-SNE 1"
+y_axis_label <- "t-SNE 2"
+
+# עיצוב
+background_color <- "white"
+grid_color <- "grey90"
+title_size <- 14
+axis_text_size <- 10
+
+# בחר פלטת צבעים (אפשר לשנות)
+# אפשרויות: "Set1", "Set2", "Set3", "Dark2", "Paired", "Accent"
+color_palette <- "Set2"
+
+# Create the plot with colors by group
+p <- ggplot(tsne_df, aes(x = X, y = Y, label = Label, color = Group)) +
+  geom_point(size = point_size, alpha = point_alpha) +
+  geom_text(hjust = text_hjust, vjust = text_vjust, size = text_size,
+            nudge_x = text_nudge_x, nudge_y = text_nudge_y,
+            check_overlap = show_text_overlap, show.legend = FALSE) +
+  scale_color_brewer(palette = color_palette) +  # צבעים אוטומטיים
+  labs(
+    title = plot_title,
+    subtitle = plot_subtitle,
+    x = x_axis_label,
+    y = y_axis_label,
+    color = "Group\n(First 2 letters)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(face = "bold", size = title_size, hjust = 0),
+    plot.subtitle = element_text(size = 10, color = "grey40"),
+    axis.text = element_text(size = axis_text_size),
+    axis.title = element_text(size = 11, face = "bold"),
+    panel.background = element_rect(fill = background_color, color = NA),
+    panel.grid.major = element_line(color = grid_color),
+    panel.grid.minor = element_line(color = grid_color, linewidth = 0.25),
+    legend.position = "right",
+    legend.title = element_text(face = "bold", size = 10),
+    legend.text = element_text(size = 9)
+  )
+
+print(p)
+
+# Save outputs
+progress_msg("Saving results...")
+
+output_file <- file.path(folder_path, "tsne_analysis_grouped.png")
+ggsave(output_file, plot = p, width = 14, height = 8, dpi = 300)
+
+# Save with group information
+csv_file <- file.path(folder_path, "tsne_results_grouped.csv")
+write.csv(tsne_df, csv_file, row.names = FALSE)
+
+terms_file <- file.path(folder_path, "top100_terms_stylo.txt")
+writeLines(colnames(word_frequencies), terms_file)
+
+progress_msg("=== COMPLETE ===")
+progress_msg(paste("Plot saved:", output_file))
+progress_msg(paste("Data saved:", csv_file))
+progress_msg(paste("Terms saved:", terms_file))

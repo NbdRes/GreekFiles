@@ -1,3 +1,7 @@
+# If needed - install packages
+install.packages("Rtsne")
+
+
 # Load required libraries
 library(tcltk)
 library(stylo)

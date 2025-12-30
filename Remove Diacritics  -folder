@@ -1,0 +1,52 @@
+library(stringi)
+
+# פונקציה להסרת דיאקריטיקה מטקסט יווני
+remove_greek_diacritics <- function(text) {
+  # NFD normalization - מפרק אותיות מורכבות לאותיות בסיסיות + סימנים נפרדים
+  text_decomposed <- stri_trans_nfd(text)
+  
+  # מסיר את כל הסימנים הדיאקריטיים (combining marks)
+  text_clean <- stri_replace_all_regex(text_decomposed, "\\p{M}", "")
+  
+  # NFC normalization - מחזיר לצורה מורכבת סטנדרטית
+  text_normalized <- stri_trans_nfc(text_clean)
+  
+  return(text_normalized)
+}
+
+# בחירת תיקייה
+folder_path <- rstudioapi::selectDirectory(
+  caption = "בחר תיקייה עם קבצי TXT ביוונית עתיקה"
+)
+
+# אם המשתמש ביטל את הבחירה
+if (is.null(folder_path)) {
+  stop("לא נבחרה תיקייה")
+}
+
+# קבלת רשימת כל קבצי ה-TXT בתיקייה
+txt_files <- list.files(folder_path, pattern = "\\.txt$", 
+                        full.names = TRUE, ignore.case = TRUE)
+
+# אם אין קבצי TXT
+if (length(txt_files) == 0) {
+  stop("לא נמצאו קבצי TXT בתיקייה שנבחרה")
+}
+
+# עיבוד כל קובץ
+for (file_path in txt_files) {
+  cat("מעבד:", basename(file_path), "\n")
+  
+  # קריאת הקובץ עם encoding מתאים ליוונית
+  text <- readLines(file_path, encoding = "UTF-8", warn = FALSE)
+  
+  # הסרת דיאקריטיקה משורות הטקסט
+  text_clean <- sapply(text, remove_greek_diacritics, USE.NAMES = FALSE)
+  
+  # דריסת הקובץ המקורי בטקסט המנוקה
+  writeLines(text_clean, file_path, useBytes = TRUE)
+  
+  cat("✓ הושלם:", basename(file_path), "\n\n")
+}
+
+cat("סיום! עובדו", length(txt_files), "קבצים.\n")

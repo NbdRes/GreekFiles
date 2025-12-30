@@ -1,0 +1,161 @@
+# התקנת shiny אם אין לך
+# install.packages("shiny")
+
+library(shiny)
+
+# --- הגדרת ממשק המשתמש (UI) ---
+ui <- fluidPage(
+  # עיצוב מודרני עם CSS מותאם אישית
+  tags$head(
+    tags$style(HTML("
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background-color: #f5f5f7;
+        padding: 20px;
+      }
+      .main-container {
+        max-width: 700px;
+        margin: 0 auto;
+        background: white;
+        padding: 40px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      }
+      h2 {
+        color: #1d1d1f;
+        font-weight: 600;
+        margin-bottom: 30px;
+      }
+      .file-input-label {
+        font-weight: 500;
+        color: #424245;
+        margin-bottom: 10px;
+        display: block;
+      }
+      .btn-primary {
+        background-color: #0071e3;
+        border: none;
+        padding: 12px 24px;
+        font-size: 16px;
+        border-radius: 8px;
+        font-weight: 500;
+        margin-top: 20px;
+      }
+      .btn-primary:hover {
+        background-color: #0077ED;
+      }
+      .btn-success {
+        background-color: #34c759;
+        border: none;
+        padding: 12px 24px;
+        font-size: 16px;
+        border-radius: 8px;
+        font-weight: 500;
+      }
+      .form-control {
+        border-radius: 8px;
+        border: 1px solid #d2d2d7;
+        padding: 10px 12px;
+        font-size: 15px;
+      }
+      .alert {
+        border-radius: 8px;
+        border: none;
+      }
+      #file_list {
+        background-color: #f5f5f7;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 15px;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+    "))
+  ),
+  
+  div(class = "main-container",
+    h2("📁 File Merger Tool"),
+    
+    # בחירת קבצים
+    div(
+      span(class = "file-input-label", "בחר קבצי טקסט לאיחוד:"),
+      fileInput("files", NULL, 
+                multiple = TRUE, 
+                accept = c(".txt", "text/plain"),
+                buttonLabel = "בחר קבצים...",
+                placeholder = "לא נבחרו קבצים")
+    ),
+    
+    # הצגת רשימת הקבצים שנבחרו
+    uiOutput("file_list"),
+    
+    # שדה להזנת שם הקובץ המאוחד
+    div(style = "margin-top: 25px;",
+      span(class = "file-input-label", "שם הקובץ המאוחד:"),
+      textInput("output_name", NULL, 
+                value = "merged_file",
+                placeholder = "הזן שם קובץ (ללא סיומת)")
+    ),
+    
+    # כפתור לאיחוד והורדה
+    downloadButton("download_merged", "💾 שמור קובץ מאוחד", 
+                   class = "btn-success")
+  )
+)
+
+# --- לוגיקת השרת (Server) ---
+server <- function(input, output, session) {
+  
+  # הצגת רשימת הקבצים שנבחרו
+  output$file_list <- renderUI({
+    req(input$files)
+    
+    files <- input$files$name
+    file_count <- length(files)
+    
+    div(id = "file_list",
+      tags$strong(paste("נבחרו", file_count, "קבצים:")),
+      tags$ul(
+        lapply(files, function(f) tags$li(f))
+      )
+    )
+  })
+  
+  # פונקציה לאיחוד הקבצים
+  merged_content <- reactive({
+    req(input$files)
+    
+    all_content <- list()
+    
+    for (i in 1:nrow(input$files)) {
+      file_path <- input$files$datapath[i]
+      file_name <- input$files$name[i]
+      
+      # הוספת הפרדה בין קבצים (אופציונלי)
+      all_content[[length(all_content) + 1]] <- paste0("\n\n========== ", file_name, " ==========\n\n")
+      
+      # קריאת תוכן הקובץ
+      content <- readLines(file_path, warn = FALSE, encoding = "UTF-8")
+      all_content[[length(all_content) + 1]] <- content
+    }
+    
+    return(paste(unlist(all_content), collapse = "\n"))
+  })
+  
+  # הורדת הקובץ המאוחד
+  output$download_merged <- downloadHandler(
+    filename = function() {
+      output_name <- input$output_name
+      if (nchar(output_name) == 0) {
+        output_name <- "merged_file"
+      }
+      paste0(output_name, ".txt")
+    },
+    content = function(file) {
+      writeLines(merged_content(), file, useBytes = TRUE)
+    }
+  )
+}
+
+# הרצת האפליקציה
+shinyApp(ui = ui, server = server)

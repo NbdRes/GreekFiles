@@ -1,0 +1,552 @@
+library(shiny)
+library(stylo)
+library(visNetwork)
+library(jsonlite)
+
+options(shiny.maxRequestSize = 200*1024^2)
+
+# Ancient Greek stop words
+greek_stopwords <- c(
+  "και", "δε", "του", "το", "την", "των", "ο", "εν", "τον", "η", 
+  "γαρ", "της", "τα", "τω", "μεν", "ου", "αυτου", "επι", "μη", "τη", 
+  "κατα", "οι", "τε", "δια", "τησ", "οτι", "εις", "ως", "ουκ", "περι", 
+  "ει", "τοις", "εκ", "αλλα", "τους", "προς", "τουτο", "αν", "απο", 
+  "αυτον", "ειναι", "αυτων", "αλλ", "ην", "ταυτα", "εστιν", "τι", 
+  "σου", "τας", "αυτω", "εισ", "εστι", "μου", "ουν", "μετα", "υπο", 
+  "τοισ", "ωσ", "εξ", "παρα", "δ", "τουσ", "ημων", "ων", "προσ", "δι",
+  "τουτων", "τις", "δη", "ουδε", "α", "θεον", "ινα", "ημιν", "φησι", 
+  "אι", "με", "τασ", "καθ", "ουτω", "τινα", "ουτως", "αυτοις", "αυτη",
+  "εγω", "γε", "κατ", "ουχ", "αυτην", "παρ", "σε", "ταις", "ον", "ουτε",
+  "אυτος", "αυτους", "προ", "επ", "σοι", "ωσπερ", "μοι", "τουτου", "υπερ",
+  "ω", "ετι", "τοινυν", "αυτο", "υμων", "επει", "εαν", "πως", "εσται",
+  "ημας", "επειδη", "ι", "אυτης", "τισ", "β", "τουτον", "ταυτην", "ωστε",
+  "οτε", "τοτε", "ε", "συ", "εφ", "διο", "τουτοις", "ειτα", "αρα", "υμιν",
+  "אντι", "οιον", "υπ", "ηδη", "τινι", "δει", "εθνων", "αυτα", "אυτοισ",
+  "אυτουσ", "συν", "ταισ", "εαυτου", "κ", "ειη", "τ", "ουτος", "ιιι",
+  "μην", "אυτοσ", "τουτω", "τινος", "μηδε", "γ", "εαυτον", "οις", "ουτωσ",
+  "εχειν", "ενταυθα", "γουν", "ημασ", "οπερ", "απ", "καν", "οσα", "ιι",
+  "μεντοι", "ος", "εμου", "τοιαυτα", "αλλων", "ομοιως", "αμα", "τινες",
+  "ουδ", "μηδεν", "ουτοι", "αυτοι", "οντα", "ετερον", "υμας", "μητε",
+  "אυτησ", "εισι", "αλλο", "εως", "ια", "τοιουτον"
+)
+
+# Function to create color gradient: Light Purple -> Dark Blue
+get_node_color <- function(degree, min_degree, max_degree) {
+  if (max_degree == min_degree) {
+    return("#8B7AB8")
+  }
+  
+  normalized <- (degree - min_degree) / (max_degree - min_degree)
+  
+  light_rgb <- col2rgb("#D4C5E8")
+  dark_rgb <- col2rgb("#1E3A8A")
+  
+  r <- round(light_rgb[1] + (dark_rgb[1] - light_rgb[1]) * normalized)
+  g <- round(light_rgb[2] + (dark_rgb[2] - light_rgb[2]) * normalized)
+  b <- round(light_rgb[3] + (dark_rgb[3] - light_rgb[3]) * normalized)
+  
+  return(rgb(r, g, b, maxColorValue = 255))
+}
+
+# UI
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background-color: #f5f5f7;
+        padding: 20px;
+      }
+      .main-container {
+        max-width: 1800px;
+        margin: 0 auto;
+        background: white;
+        padding: 40px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      }
+      h2 {
+        color: #1d1d1f;
+        font-weight: 600;
+        font-size: 32px;
+        margin-bottom: 30px;
+      }
+      h3 {
+        color: #424245;
+        font-weight: 600;
+        font-size: 24px;
+        margin-top: 40px;
+        margin-bottom: 20px;
+      }
+      .controls-row {
+        display: flex;
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+      .control-item {
+        flex: 1;
+      }
+      .btn-primary {
+        background-color: #0071e3;
+        border: none;
+        padding: 12px 24px;
+        font-size: 16px;
+        border-radius: 8px;
+        font-weight: 500;
+        width: 100%;
+      }
+      .btn-success {
+        background-color: #34c759;
+        border: none;
+        padding: 12px 24px;
+        font-size: 16px;
+        border-radius: 8px;
+        font-weight: 500;
+        width: 100%;
+        margin-top: 15px;
+      }
+      #file_list {
+        background-color: #f5f5f7;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 15px;
+        max-height: 120px;
+        overflow-y: auto;
+        font-size: 13px;
+      }
+      .info-box {
+        background-color: #e8f4fd;
+        border-left: 4px solid #0071e3;
+        padding: 15px;
+        border-radius: 4px;
+        margin: 20px 0;
+        font-size: 15px;
+      }
+      .word-list {
+        background-color: #f9f9f9;
+        padding: 25px;
+        border-radius: 8px;
+        max-height: 500px;
+        overflow-y: auto;
+        font-size: 14px;
+        line-height: 1.6;
+        column-count: 3;
+        column-gap: 30px;
+      }
+      .word-item {
+        break-inside: avoid;
+        margin-bottom: 8px;
+      }
+      .word-rank {
+        display: inline-block;
+        width: 35px;
+        color: #666;
+        font-weight: 600;
+      }
+      .word-text {
+        color: #0071e3;
+        font-weight: 500;
+      }
+      .word-freq {
+        color: #999;
+        font-size: 12px;
+      }
+      .legend-box {
+        background-color: #f9f9f9;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 15px 0;
+        border: 1px solid #e0e0e0;
+      }
+      .legend-item {
+        display: inline-block;
+        margin-right: 20px;
+        font-size: 13px;
+      }
+      .legend-color {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        margin-right: 5px;
+        vertical-align: middle;
+        border: 2px solid #333;
+      }
+    "))
+  ),
+  
+  div(class = "main-container",
+    h2("🕸️ Stylometric Network Analysis"),
+    
+    div(class = "info-box",
+      tags$strong("Interactive network with gradient coloring by connection degree"),
+      tags$br(),
+      "Node color: ", 
+      tags$span(style = "color: #D4C5E8; font-weight: bold; background: #333; padding: 2px 8px; border-radius: 3px;", "Light Purple"),
+      " = few connections → ",
+      tags$span(style = "color: #1E3A8A; font-weight: bold; background: #fff; padding: 2px 8px; border-radius: 3px;", "Dark Blue"),
+      " = many connections"
+    ),
+    
+    div(
+      fileInput("files", "Select TXT files:", 
+                multiple = TRUE, 
+                accept = c(".txt", "text/plain"),
+                buttonLabel = "Choose files...",
+                placeholder = "No files selected")
+    ),
+    
+    uiOutput("file_list"),
+    
+    div(class = "controls-row",
+      div(class = "control-item",
+        sliderInput("mfw", "Most Frequent Words:", 
+                    min = 50, max = 500, value = 200, step = 50)
+      ),
+      div(class = "control-item",
+        selectInput("distance_method", "Distance metric:",
+                    choices = c("Cosine Delta" = "wurzburg",
+                              "Classic Delta" = "delta",
+                              "Eder's Delta" = "eder",
+                              "Manhattan" = "manhattan"),
+                    selected = "wurzburg")
+      ),
+      div(class = "control-item",
+        sliderInput("similarity_threshold", "Similarity threshold:", 
+                    min = 0.1, max = 0.8, value = 0.4, step = 0.05)
+      )
+    ),
+    
+    actionButton("create_network", "📊 Create Network", class = "btn-primary"),
+    
+    hr(),
+    
+    verbatimTextOutput("stats"),
+    
+    div(class = "legend-box",
+      uiOutput("color_legend")
+    ),
+    
+    h3("📊 Interactive Network Visualization"),
+    p("Drag nodes slowly • Scroll to zoom • Click for details", style = "color: #666; margin-bottom: 15px;"),
+    visNetworkOutput("network_plot", height = "800px"),
+    
+    downloadButton("download_html", "💾 Download Interactive Network", class = "btn-success"),
+    
+    hr(),
+    
+    h3("📝 Top 100 Most Frequent Words"),
+    div(class = "word-list",
+      uiOutput("word_freq_list")
+    )
+  )
+)
+
+# Server
+server <- function(input, output, session) {
+  
+  output$file_list <- renderUI({
+    req(input$files)
+    div(id = "file_list",
+      tags$strong(paste("Selected", length(input$files$name), "files")))
+  })
+  
+  network_data <- eventReactive(input$create_network, {
+    req(input$files)
+    
+    withProgress(message = 'Analyzing...', value = 0, {
+      
+      start_time <- Sys.time()
+      n_files <- nrow(input$files)
+      
+      temp_dir <- tempdir()
+      corpus_dir <- file.path(temp_dir, "corpus")
+      dir.create(corpus_dir, showWarnings = FALSE, recursive = TRUE)
+      
+      incProgress(0.2, detail = "Loading corpus...")
+      
+      doc_names <- gsub("\\.txt$", "", input$files$name)
+      
+      for (i in 1:n_files) {
+        clean_name <- make.names(doc_names[i])
+        file.copy(input$files$datapath[i], 
+                 file.path(corpus_dir, paste0(clean_name, ".txt")),
+                 overwrite = TRUE)
+      }
+      
+      parsed_corpus <- tryCatch({
+        load.corpus.and.parse(
+          files = "all",
+          corpus.dir = corpus_dir,
+          markup.type = "plain",
+          corpus.lang = "Other",
+          splitting.rule = "[^α-ωά-ώἀ-ὼa-zA-Z]+",
+          preserve.case = FALSE
+        )
+      }, error = function(e) NULL)
+      
+      if (is.null(parsed_corpus)) {
+        return(list(error = "Failed to parse corpus."))
+      }
+      
+      incProgress(0.5, detail = "Computing frequencies...")
+      
+      full_freq_list <- make.frequency.list(parsed_corpus, head = 1000)
+      full_freq_list <- full_freq_list[!full_freq_list %in% greek_stopwords]
+      
+      word_freqs <- make.table.of.frequencies(parsed_corpus, features = head(full_freq_list, 500), relative = FALSE)
+      total_word_counts <- colSums(word_freqs)
+      top_100_words <- head(sort(total_word_counts, decreasing = TRUE), 100)
+      
+      freq_list <- head(full_freq_list, input$mfw)
+      
+      if (length(freq_list) < 10) {
+        return(list(error = "Too few words after filtering."))
+      }
+      
+      freq_table <- make.table.of.frequencies(parsed_corpus, features = freq_list, relative = TRUE)
+      
+      incProgress(0.8, detail = "Computing distances...")
+      
+      distance_matrix <- tryCatch({
+        if (input$distance_method == "delta") {
+          as.matrix(dist.delta(freq_table))
+        } else if (input$distance_method == "wurzburg") {
+          as.matrix(dist.wurzburg(freq_table))
+        } else if (input$distance_method == "eder") {
+          as.matrix(dist.eder(freq_table))
+        } else {
+          as.matrix(dist.manhattan(freq_table))
+        }
+      }, error = function(e) NULL)
+      
+      if (is.null(distance_matrix)) {
+        return(list(error = "Failed to compute distances."))
+      }
+      
+      max_dist <- max(distance_matrix[distance_matrix != Inf])
+      similarity_matrix <- 1 - (distance_matrix / max_dist)
+      similarity_matrix[is.nan(similarity_matrix)] <- 0
+      similarity_matrix[is.infinite(similarity_matrix)] <- 0
+      diag(similarity_matrix) <- 0
+      similarity_matrix[similarity_matrix < input$similarity_threshold] <- 0
+      
+      edges <- which(similarity_matrix > 0 & upper.tri(similarity_matrix), arr.ind = TRUE)
+      
+      if (nrow(edges) == 0) {
+        return(list(error = "No connections above threshold."))
+      }
+      
+      # Build nodes with gradient coloring
+      node_names <- rownames(similarity_matrix)
+      degrees <- rowSums(similarity_matrix > 0)
+      
+      min_degree <- min(degrees)
+      max_degree <- max(degrees)
+      
+      nodes_df <- data.frame(
+        id = node_names,
+        label = node_names,
+        title = paste0("<b>", node_names, "</b><br>", degrees, " connections"),
+        value = degrees,
+        stringsAsFactors = FALSE
+      )
+      
+      nodes_df$color <- sapply(degrees, get_node_color, min_degree, max_degree)
+      
+      # Build edges
+      edges_df <- data.frame(
+        from = node_names[edges[, 1]],
+        to = node_names[edges[, 2]],
+        value = similarity_matrix[edges],
+        title = paste0("Similarity: ", round(similarity_matrix[edges], 3)),
+        color = sapply(similarity_matrix[edges], function(v) {
+          if (v >= 0.7) "#7B68B0"
+          else if (v >= 0.5) "#9B8BC4"
+          else "#C4B8E2"
+        }),
+        stringsAsFactors = FALSE
+      )
+      
+      unlink(corpus_dir, recursive = TRUE)
+      
+      end_time <- Sys.time()
+      processing_time <- round(as.numeric(difftime(end_time, start_time, units = "secs")), 2)
+      
+      list(
+        nodes = nodes_df,
+        edges = edges_df,
+        total_docs = n_files,
+        features_used = length(freq_list),
+        processing_time = processing_time,
+        top_words = top_100_words,
+        min_degree = min_degree,
+        max_degree = max_degree,
+        error = NULL
+      )
+    })
+  })
+  
+  output$stats <- renderText({
+    data <- network_data()
+    
+    if (!is.null(data$error)) {
+      return(paste("ERROR:", data$error))
+    }
+    
+    paste0(
+      "Documents: ", data$total_docs, " | ",
+      "Features: ", data$features_used, " | ",
+      "Nodes: ", nrow(data$nodes), " | ",
+      "Edges: ", nrow(data$edges), " | ",
+      "Time: ", data$processing_time, "s"
+    )
+  })
+  
+  output$color_legend <- renderUI({
+    data <- network_data()
+    
+    if (!is.null(data$error)) {
+      return(NULL)
+    }
+    
+    min_d <- data$min_degree
+    max_d <- data$max_degree
+    
+    legend_degrees <- seq(min_d, max_d, length.out = 5)
+    legend_colors <- sapply(legend_degrees, get_node_color, min_d, max_d)
+    
+    legend_items <- lapply(1:5, function(i) {
+      div(class = "legend-item",
+        span(class = "legend-color", style = paste0("background-color: ", legend_colors[i])),
+        span(paste0(round(legend_degrees[i]), " connections"))
+      )
+    })
+    
+    tagList(
+      tags$strong("Color Legend (Purple → Blue): "),
+      legend_items
+    )
+  })
+  
+  output$network_plot <- renderVisNetwork({
+    data <- network_data()
+    
+    if (!is.null(data$error)) {
+      return(NULL)
+    }
+    
+    visNetwork(data$nodes, data$edges, height = "800px", width = "100%") %>%
+      visNodes(
+        shape = "dot",
+        borderWidth = 2,
+        color = list(border = "#000000", highlight = list(border = "#000000")),
+        font = list(
+          size = 18, 
+          face = "arial", 
+          color = "#1C1C1C", 
+          bold = TRUE,
+          strokeWidth = 4,        # Width of the white outline
+          strokeColor = "#FFFFFF"  # White halo/outline
+        )
+      ) %>%
+      visEdges(
+        smooth = list(enabled = TRUE, type = "continuous", roundness = 0.5),
+        width = 2,
+        selectionWidth = 4
+      ) %>%
+      visPhysics(
+        enabled = TRUE,
+        solver = "barnesHut",
+        barnesHut = list(
+          gravitationalConstant = -15000,
+          centralGravity = 0.1,
+          springLength = 350,
+          springConstant = 0.005,
+          damping = 0.5,
+          avoidOverlap = 0.8
+        ),
+        stabilization = list(
+          enabled = TRUE,
+          iterations = 2000,
+          updateInterval = 50,
+          fit = TRUE
+        )
+      ) %>%
+      visInteraction(
+        navigationButtons = TRUE,
+        hover = TRUE,
+        tooltipDelay = 100,
+        hideEdgesOnDrag = FALSE,
+        zoomView = TRUE,
+        dragView = TRUE,
+        dragNodes = TRUE
+      ) %>%
+      visOptions(
+        highlightNearest = list(enabled = TRUE, hover = TRUE, degree = 1),
+        nodesIdSelection = TRUE
+      ) %>%
+      visLayout(randomSeed = 42)
+  })
+  
+  output$word_freq_list <- renderUI({
+    data <- network_data()
+    
+    if (!is.null(data$error) || is.null(data$top_words)) {
+      return(p("Create network first", style = "color: #999; text-align: center; font-size: 16px;"))
+    }
+    
+    word_items <- lapply(1:length(data$top_words), function(i) {
+      div(class = "word-item",
+        span(class = "word-rank", paste0(i, ".")),
+        span(class = "word-text", names(data$top_words)[i]),
+        span(class = "word-freq", paste0(" (", data$top_words[i], ")"))
+      )
+    })
+    
+    tagList(word_items)
+  })
+  
+  output$download_html <- downloadHandler(
+    filename = function() {
+      paste0("stylometric_network_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".html")
+    },
+    content = function(file) {
+      data <- network_data()
+      
+      vn <- visNetwork(data$nodes, data$edges) %>%
+        visNodes(
+          shape = "dot", 
+          borderWidth = 2, 
+          color = list(border = "#000000"),
+          font = list(
+            size = 18, 
+            face = "arial", 
+            color = "#1C1C1C", 
+            bold = TRUE,
+            strokeWidth = 4,
+            strokeColor = "#FFFFFF"
+          )
+        ) %>%
+        visEdges(smooth = list(enabled = TRUE, type = "continuous", roundness = 0.5)) %>%
+        visPhysics(
+          enabled = TRUE,
+          solver = "barnesHut",
+          barnesHut = list(
+            gravitationalConstant = -15000,
+            centralGravity = 0.1,
+            springLength = 350,
+            springConstant = 0.005,
+            damping = 0.5
+          ),
+          stabilization = list(iterations = 2000)
+        ) %>%
+        visInteraction(navigationButtons = TRUE, dragNodes = TRUE) %>%
+        visOptions(highlightNearest = TRUE)
+      
+      visSave(vn, file)
+    }
+  )
+}
+
+shinyApp(ui = ui, server = server)

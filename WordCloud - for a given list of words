@@ -1,0 +1,206 @@
+library(shiny)
+library(wordcloud)
+library(RColorBrewer)
+
+ui <- fluidPage(
+  titlePanel("☁️ Hebrew/Greek Word Cloud Generator"),
+  
+  tags$style(HTML("
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #f5f5f7;
+      padding: 20px;
+    }
+    .main-panel {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    h2 {
+      color: #1d1d1f;
+      font-weight: 600;
+    }
+    .info-box {
+      background-color: #e8f4fd;
+      border-left: 4px solid #0071e3;
+      padding: 15px;
+      border-radius: 4px;
+      margin: 20px 0;
+    }
+  ")),
+  
+  sidebarLayout(
+    sidebarPanel(
+      width = 4,
+      div(class = "info-box",
+        tags$strong("Paste your word list"),
+        tags$br(),
+        "Format: 1. word (frequency)"
+      ),
+      
+      textAreaInput(
+        "word_list",
+        "Word List (100 words max):",
+        height = "400px",
+        placeholder = "1. θεου (36657)\n2. παντα (16141)\n3. φησιν (15606)\n..."
+      ),
+      
+      sliderInput("min_size", "Minimum text size:", 
+                  min = 0.3, max = 2, value = 0.8, step = 0.1),
+      
+      sliderInput("max_size", "Maximum text size:", 
+                  min = 2, max = 8, value = 5, step = 0.5),
+      
+      sliderInput("rotation", "Word rotation (%):", 
+                  min = 0, max = 50, value = 15, step = 5),
+      
+      actionButton("generate", "🎨 Generate Word Cloud", 
+                   class = "btn btn-primary btn-lg btn-block",
+                   style = "margin-top: 15px;"),
+      
+      hr(),
+      
+      downloadButton("download_svg", "💾 Download SVG (Vector)", 
+                     class = "btn btn-success btn-block"),
+      downloadButton("download_png", "💾 Download PNG (High-Res)", 
+                     class = "btn btn-success btn-block",
+                     style = "margin-top: 10px;")
+    ),
+    
+    mainPanel(
+      width = 8,
+      div(class = "main-panel",
+        h2("Word Cloud Preview"),
+        plotOutput("wordcloud", height = "700px")
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  
+  parsed_data <- eventReactive(input$generate, {
+    req(input$word_list)
+    
+    text <- input$word_list
+    lines <- strsplit(text, "\n")[[1]]
+    lines <- lines[nzchar(trimws(lines))]
+    
+    if (length(lines) == 0) {
+      return(NULL)
+    }
+    
+    # Parse format: 1. word (frequency)
+    words <- character()
+    freqs <- numeric()
+    
+    for (line in lines) {
+      # Extract word and frequency
+      match <- regmatches(line, regexec("^\\d+\\.\\s*([^(]+)\\s*\\((\\d+)\\)", line))[[1]]
+      
+      if (length(match) == 3) {
+        word <- trimws(match[2])
+        freq <- as.numeric(match[3])
+        
+        words <- c(words, word)
+        freqs <- c(freqs, freq)
+      }
+    }
+    
+    if (length(words) == 0) {
+      return(NULL)
+    }
+    
+    # Take top 100
+    if (length(words) > 100) {
+      words <- words[1:100]
+      freqs <- freqs[1:100]
+    }
+    
+    data.frame(
+      word = words,
+      freq = freqs,
+      stringsAsFactors = FALSE
+    )
+  })
+  
+  create_wordcloud_plot <- function(data, min_size, max_size, rotation) {
+    if (is.null(data) || nrow(data) == 0) {
+      plot.new()
+      text(0.5, 0.5, "Paste word list and click Generate", cex = 1.5, col = "#999")
+      return()
+    }
+    
+    # Custom pastel color palette (green and purple)
+    pastel_colors <- c(
+      "#B8E0B8",  # Light pastel green
+      "#A8D5A8",  # Medium light green
+      "#98D598",  # Medium green
+      "#88CC88",  # Darker pastel green
+      "#D4C5E8",  # Light pastel purple
+      "#C5B8E0",  # Medium light purple
+      "#B5A8D5",  # Medium purple
+      "#A898C5",  # Darker pastel purple
+      "#C8E6C9",  # Lighter green
+      "#B8C5E8"   # Light blue-purple
+    )
+    
+    par(mar = c(0, 0, 0, 0), bg = "#FAFAFA")
+    
+    set.seed(42)
+    wordcloud(
+      words = data$word,
+      freq = data$freq,
+      max.words = 100,
+      random.order = FALSE,
+      ordered.colors = FALSE,
+      colors = pastel_colors,
+      rot.per = rotation / 100,
+      scale = c(max_size, min_size),
+      min.freq = 1,
+      use.r.layout = TRUE,
+      fixed.asp = TRUE,
+      family = "sans"
+    )
+  }
+  
+  output$wordcloud <- renderPlot({
+    data <- parsed_data()
+    create_wordcloud_plot(data, input$min_size, input$max_size, input$rotation)
+  }, bg = "#FAFAFA")
+  
+  output$download_svg <- downloadHandler(
+    filename = function() {
+      paste0("wordcloud_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".svg")
+    },
+    content = function(file) {
+      data <- parsed_data()
+      
+      if (is.null(data) || nrow(data) == 0) return()
+      
+      # Use svglite for better Unicode support
+      svglite::svglite(file, width = 12, height = 10, bg = "#FAFAFA", 
+                       system_fonts = list(sans = "Arial Unicode MS"))
+      create_wordcloud_plot(data, input$min_size, input$max_size, input$rotation)
+      dev.off()
+    }
+  )
+  
+  output$download_png <- downloadHandler(
+    filename = function() {
+      paste0("wordcloud_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+    },
+    content = function(file) {
+      data <- parsed_data()
+      
+      if (is.null(data) || nrow(data) == 0) return()
+      
+      png(file, width = 3600, height = 3000, res = 300, bg = "#FAFAFA")
+      create_wordcloud_plot(data, input$min_size, input$max_size, input$rotation)
+      dev.off()
+    }
+  )
+}
+
+shinyApp(ui = ui, server = server)

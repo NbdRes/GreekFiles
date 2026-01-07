@@ -1,0 +1,503 @@
+# Bin Covering Algorithm for Text Grouping - Precise Implementation
+# Based on exact algorithmic specifications
+
+library(tcltk)
+
+# Function to select folder containing TXT files
+select_folder <- function() {
+  folder_path <- tk_choose.dir(caption = "בחר תיקיה המכילה קבצי TXT")
+  return(folder_path)
+}
+
+# Function to create safe filename from original filenames
+create_group_filename <- function(texts, max_length = 200) {
+  # הסרת סיומת .txt מכל קובץ
+  filenames <- sapply(texts, function(t) {
+    name <- t$filename
+    name <- sub("\\.txt$", "", name, ignore.case = TRUE)
+    return(name)
+  })
+  
+  # חיבור עם קו תחתון
+  combined_name <- paste(filenames, collapse = "_")
+  
+  # אם השם ארוך מדי, קיצור
+  if (nchar(combined_name) > max_length) {
+    if (length(filenames) > 2) {
+      combined_name <- paste0(filenames[1], "_", filenames[2], "_..._", filenames[length(filenames)])
+    } else {
+      combined_name <- substr(combined_name, 1, max_length)
+    }
+  }
+  
+  # הסרת תווים בעייתיים לשמות קבצים
+  combined_name <- gsub("[<>:\"/\\\\|?*]", "_", combined_name)
+  
+  return(combined_name)
+}
+
+# Function to read all TXT files from folder
+read_text_files <- function(folder_path) {
+  txt_files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE, ignore.case = TRUE)
+  
+  if (length(txt_files) == 0) {
+    stop("No TXT files found in the selected folder")
+  }
+  
+  texts <- list()
+  for (file in txt_files) {
+    content <- readLines(file, warn = FALSE, encoding = "UTF-8")
+    content <- paste(content, collapse = " ")
+    
+    # Count words
+    word_count <- length(strsplit(content, "\\s+")[[1]])
+    
+    texts[[basename(file)]] <- list(
+      filename = basename(file),
+      filepath = file,
+      content = content,
+      word_count = word_count
+    )
+  }
+  
+  return(texts)
+}
+
+# Main bin-covering algorithm
+bin_covering_algorithm <- function(texts, threshold = 100) {
+  
+  # Step 0: Initial division
+  complete_texts <- list()
+  incomplete_texts <- list()
+  
+  for (name in names(texts)) {
+    if (texts[[name]]$word_count >= threshold) {
+      complete_texts[[name]] <- texts[[name]]
+    } else {
+      incomplete_texts[[name]] <- texts[[name]]
+    }
+  }
+  
+  cat("Step 0: Initial division\n")
+  cat("  Complete texts (>= 100 words):", length(complete_texts), "\n")
+  cat("  Incomplete texts (< 100 words):", length(incomplete_texts), "\n\n")
+  
+  # If no incomplete texts, return
+  if (length(incomplete_texts) == 0) {
+    return(list(groups = list(), complete_texts = complete_texts, ungrouped = list()))
+  }
+  
+  # Step 1: Sort incomplete texts in non-increasing order
+  T_prime <- incomplete_texts[order(sapply(incomplete_texts, function(x) x$word_count), decreasing = TRUE)]
+  
+  cat("Step 1: Sorted incomplete texts\n")
+  cat("  Order (longest to shortest):", paste(names(T_prime), collapse = ", "), "\n\n")
+  
+  # Initialize variables
+  groups <- list()
+  assigned <- character(0)
+  available <- names(T_prime)
+  
+  # Step 2.1: First round - build groups to reach threshold
+  cat("=== Step 2.1: First Round Grouping ===\n")
+  
+  for (i in seq_along(T_prime)) {
+    text_name <- names(T_prime)[i]
+    
+    # Skip if already assigned
+    if (text_name %in% assigned) {
+      next
+    }
+    
+    text_i <- T_prime[[text_name]]
+    cat("\nProcessing:", text_name, "(", text_i$word_count, "words)\n")
+    
+    # Start new group with current text
+    current_group_texts <- list(text_i)
+    current_total <- text_i$word_count
+    current_assigned <- c(text_name)
+    
+    # Keep adding texts until we reach threshold
+    while (current_total < threshold) {
+      gap <- threshold - current_total
+      cat("  Current total:", current_total, "words. Gap:", gap, "\n")
+      
+      # Get available texts (not yet assigned)
+      current_available <- setdiff(available, c(assigned, current_assigned))
+      
+      if (length(current_available) == 0) {
+        cat("  No more available texts. Stopping group formation.\n")
+        break
+      }
+      
+      # Get available texts sorted by length
+      available_texts <- T_prime[current_available]
+      available_sorted_asc <- available_texts[order(sapply(available_texts, function(x) x$word_count))]
+      available_sorted_desc <- available_texts[order(sapply(available_texts, function(x) x$word_count), decreasing = TRUE)]
+      
+      # Find shortest text that fills the gap (nj >= gap)
+      best_match <- NULL
+      for (j in seq_along(available_sorted_asc)) {
+        candidate_name <- names(available_sorted_asc)[j]
+        candidate <- available_sorted_asc[[candidate_name]]
+        
+        if (candidate$word_count >= gap) {
+          best_match <- candidate_name
+          cat("  Found text that fills gap:", candidate_name, "(", candidate$word_count, "words)\n")
+          break
+        }
+      }
+      
+      # If no text fills the gap, take the longest available
+      if (is.null(best_match)) {
+        best_match <- names(available_sorted_desc)[1]
+        cat("  No text fills gap. Taking longest:", best_match, "(", available_sorted_desc[[1]]$word_count, "words)\n")
+      }
+      
+      # Add to current group
+      current_group_texts[[length(current_group_texts) + 1]] <- T_prime[[best_match]]
+      current_total <- current_total + T_prime[[best_match]]$word_count
+      current_assigned <- c(current_assigned, best_match)
+    }
+    
+    # If we reached threshold, create the group
+    if (current_total >= threshold) {
+      groups[[length(groups) + 1]] <- list(
+        texts = current_group_texts,
+        total_words = current_total,
+        overshoot = current_total - threshold
+      )
+      
+      assigned <- c(assigned, current_assigned)
+      
+      cat("  ✓ Created group with", length(current_group_texts), "texts,", 
+          current_total, "words (overshoot:", current_total - threshold, ")\n")
+      cat("  Texts in group:", paste(sapply(current_group_texts, function(t) t$filename), collapse = ", "), "\n")
+    } else {
+      cat("  ✗ Could not reach threshold. Group not created.\n")
+    }
+  }
+  
+  cat("\n=== After First Round ===\n")
+  cat("Groups created:", length(groups), "\n")
+  cat("Texts assigned:", length(assigned), "\n")
+  
+  # Step 2.2: Final round - add remaining texts to existing groups
+  remaining <- setdiff(names(T_prime), assigned)
+  
+  if (length(remaining) > 0 && length(groups) > 0) {
+    cat("\n=== Step 2.2: Final Round Grouping ===\n")
+    cat("Remaining texts to assign:", length(remaining), "\n")
+    
+    remaining_texts <- T_prime[remaining]
+    remaining_sorted <- remaining_texts[order(sapply(remaining_texts, function(x) x$word_count), decreasing = TRUE)]
+    
+    iteration <- 1
+    while (length(remaining_sorted) > 0) {
+      cat("\nIteration", iteration, "- Remaining texts:", length(remaining_sorted), "\n")
+      
+      # Sort groups by total word count (non-decreasing = ascending)
+      groups <- groups[order(sapply(groups, function(g) g$total_words))]
+      
+      # Add one text to each group (if texts remain)
+      for (g_idx in seq_along(groups)) {
+        if (length(remaining_sorted) == 0) break
+        
+        # Take longest remaining text
+        text_to_add_name <- names(remaining_sorted)[1]
+        text_to_add <- remaining_sorted[[1]]
+        
+        # Add to current group
+        groups[[g_idx]]$texts[[length(groups[[g_idx]]$texts) + 1]] <- text_to_add
+        groups[[g_idx]]$total_words <- groups[[g_idx]]$total_words + text_to_add$word_count
+        groups[[g_idx]]$overshoot <- groups[[g_idx]]$total_words - threshold
+        
+        cat("  Added", text_to_add_name, "(", text_to_add$word_count, "words) to group", g_idx, 
+            "- new total:", groups[[g_idx]]$total_words, "words\n")
+        
+        # Remove from remaining
+        remaining_sorted <- remaining_sorted[-1]
+      }
+      
+      iteration <- iteration + 1
+      
+      # Safety check
+      if (iteration > 100) {
+        cat("Warning: Maximum iterations reached\n")
+        break
+      }
+    }
+  } else if (length(remaining) > 0 && length(groups) == 0) {
+    cat("\n=== Step 2.2: No groups to add to ===\n")
+    cat("All texts in T' remain ungrouped\n")
+  }
+  
+  # Collect ungrouped texts
+  all_grouped <- character(0)
+  if (length(groups) > 0) {
+    all_grouped <- unlist(lapply(groups, function(g) sapply(g$texts, function(t) t$filename)))
+  }
+  ungrouped_names <- setdiff(names(T_prime), all_grouped)
+  ungrouped <- T_prime[ungrouped_names]
+  
+  return(list(
+    groups = groups,
+    complete_texts = complete_texts,
+    ungrouped = ungrouped
+  ))
+}
+
+# Function to print results
+print_results <- function(result, threshold = 100) {
+  cat("\n\n========================================\n")
+  cat("ALGORITHM RESULTS\n")
+  cat("========================================\n\n")
+  
+  if (length(result$complete_texts) > 0) {
+    cat("COMPLETE TEXTS (>= 100 words, remain as-is):\n")
+    cat("Total:", length(result$complete_texts), "texts\n")
+    for (name in names(result$complete_texts)) {
+      cat("  -", name, ":", result$complete_texts[[name]]$word_count, "words\n")
+    }
+    cat("\n")
+  }
+  
+  if (length(result$groups) > 0) {
+    cat("GROUPS CREATED:", length(result$groups), "\n\n")
+    
+    for (i in seq_along(result$groups)) {
+      group <- result$groups[[i]]
+      cat("Group", i, ":\n")
+      cat("  Total words:", group$total_words, "\n")
+      cat("  Overshoot:", group$overshoot, "words\n")
+      cat("  Number of texts:", length(group$texts), "\n")
+      cat("  Texts:\n")
+      for (text in group$texts) {
+        cat("    -", text$filename, "(", text$word_count, "words)\n")
+      }
+      cat("\n")
+    }
+    
+    total_overshoot <- sum(sapply(result$groups, function(g) g$overshoot))
+    max_overshoot <- max(sapply(result$groups, function(g) g$overshoot))
+    avg_overshoot <- mean(sapply(result$groups, function(g) g$overshoot))
+    
+    cat("STATISTICS:\n")
+    cat("  Total groups (K):", length(result$groups), "\n")
+    cat("  Total overshoot (Δ):", total_overshoot, "words\n")
+    cat("  Maximum overshoot:", max_overshoot, "words\n")
+    cat("  Average overshoot:", round(avg_overshoot, 2), "words\n")
+  }
+  
+  if (length(result$ungrouped) > 0) {
+    cat("\nUNGROUPED TEXTS (could not be grouped):\n")
+    cat("Total:", length(result$ungrouped), "texts\n")
+    for (name in names(result$ungrouped)) {
+      cat("  -", name, ":", result$ungrouped[[name]]$word_count, "words\n")
+    }
+  }
+}
+
+# Function to create metadata table
+create_metadata_table <- function(result, output_folder, threshold = 100) {
+  
+  if (length(result$groups) == 0) {
+    cat("No groups to create metadata for.\n")
+    return(NULL)
+  }
+  
+  # Create data frame for metadata
+  metadata <- data.frame(
+    Group_ID = integer(),
+    Group_Filename = character(),
+    Num_Texts = integer(),
+    Total_Words = integer(),
+    Overshoot = integer(),
+    Original_Files = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (i in seq_along(result$groups)) {
+    group <- result$groups[[i]]
+    
+    group_filename <- create_group_filename(group$texts)
+    original_files <- paste(sapply(group$texts, function(t) t$filename), collapse = "; ")
+    
+    metadata <- rbind(metadata, data.frame(
+      Group_ID = i,
+      Group_Filename = group_filename,
+      Num_Texts = length(group$texts),
+      Total_Words = group$total_words,
+      Overshoot = group$overshoot,
+      Original_Files = original_files,
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  # Save to CSV
+  metadata_file <- file.path(output_folder, "groups_metadata.csv")
+  write.csv(metadata, metadata_file, row.names = FALSE, fileEncoding = "UTF-8")
+  
+  cat("\nMetadata table saved to:", metadata_file, "\n")
+  
+  return(metadata)
+}
+
+# Function to manage files and create output
+manage_processed_files <- function(result, source_folder, threshold = 100) {
+  
+  # יצירת תיקיית processed
+  processed_folder <- file.path(source_folder, "processed")
+  if (!dir.exists(processed_folder)) {
+    dir.create(processed_folder, recursive = TRUE)
+  }
+  
+  # תיקיית משנה לקבוצות
+  grouped_folder <- file.path(processed_folder, "grouped")
+  if (!dir.exists(grouped_folder)) {
+    dir.create(grouped_folder, recursive = TRUE)
+  }
+  
+  # תיקיית משנה לטקסטים שלמים
+  complete_folder <- file.path(processed_folder, "complete")
+  if (!dir.exists(complete_folder)) {
+    dir.create(complete_folder, recursive = TRUE)
+  }
+  
+  # תיקיית משנה לטקסטים שלא קובצו
+  ungrouped_folder <- file.path(processed_folder, "ungrouped")
+  if (length(result$ungrouped) > 0 && !dir.exists(ungrouped_folder)) {
+    dir.create(ungrouped_folder, recursive = TRUE)
+  }
+  
+  files_moved <- 0
+  
+  cat("\n=== Managing Processed Files ===\n\n")
+  
+  # 1. טיפול בטקסטים שלמים (>= 100 מילים)
+  if (length(result$complete_texts) > 0) {
+    cat("Moving complete texts (>= 100 words)...\n")
+    for (name in names(result$complete_texts)) {
+      text <- result$complete_texts[[name]]
+      source_file <- text$filepath
+      dest_file <- file.path(complete_folder, basename(source_file))
+      
+      if (file.copy(source_file, dest_file, overwrite = TRUE)) {
+        file.remove(source_file)
+        cat("  Moved:", basename(source_file), "\n")
+        files_moved <- files_moved + 1
+      }
+    }
+    cat("\n")
+  }
+  
+  # 2. יצירת קבצים מאוחדים לקבוצות
+  if (length(result$groups) > 0) {
+    cat("Creating grouped files...\n")
+    
+    for (i in seq_along(result$groups)) {
+      group <- result$groups[[i]]
+      
+      # יצירת שם קובץ מהקבצים המקוריים
+      group_filename <- create_group_filename(group$texts)
+      
+      # חיבור הטקסטים ישירות - בלי שום הפרדה או הערות
+      combined_text <- paste(sapply(group$texts, function(t) t$content), collapse = "")
+      
+      # שמירת הקובץ המאוחד
+      output_file <- file.path(grouped_folder, paste0(group_filename, ".txt"))
+      
+      # במקרה של שם קובץ כפול
+      if (file.exists(output_file)) {
+        output_file <- file.path(grouped_folder, paste0(group_filename, "_", i, ".txt"))
+      }
+      
+      writeLines(combined_text, output_file, useBytes = TRUE)
+      
+      cat("  Created:", basename(output_file), "\n")
+      
+      # העברת הקבצים המקוריים
+      group_subfolder <- file.path(grouped_folder, paste0(group_filename, "_originals"))
+      if (!dir.exists(group_subfolder)) {
+        dir.create(group_subfolder, recursive = TRUE)
+      }
+      
+      for (text in group$texts) {
+        source_file <- text$filepath
+        dest_file <- file.path(group_subfolder, basename(source_file))
+        
+        if (file.copy(source_file, dest_file, overwrite = TRUE)) {
+          file.remove(source_file)
+          files_moved <- files_moved + 1
+        }
+      }
+    }
+    cat("\n")
+  }
+  
+  # 3. טיפול בטקסטים שלא קובצו
+  if (length(result$ungrouped) > 0) {
+    cat("Moving ungrouped texts...\n")
+    for (name in names(result$ungrouped)) {
+      text <- result$ungrouped[[name]]
+      source_file <- text$filepath
+      dest_file <- file.path(ungrouped_folder, basename(source_file))
+      
+      if (file.copy(source_file, dest_file, overwrite = TRUE)) {
+        file.remove(source_file)
+        cat("  Moved:", basename(source_file), "\n")
+        files_moved <- files_moved + 1
+      }
+    }
+    cat("\n")
+  }
+  
+  # 4. יצירת טבלת metadata
+  cat("Creating metadata table...\n")
+  create_metadata_table(result, processed_folder, threshold)
+  
+  cat("\nFile management completed!\n")
+  cat("Total original files moved:", files_moved, "\n")
+  
+  return(processed_folder)
+}
+
+# Main execution function
+main <- function() {
+  cat("=== Bin Covering Algorithm for Text Grouping ===\n\n")
+  
+  # Select folder
+  folder_path <- select_folder()
+  
+  if (is.na(folder_path) || folder_path == "") {
+    cat("No folder selected. Exiting.\n")
+    return(invisible(NULL))
+  }
+  
+  cat("Selected folder:", folder_path, "\n\n")
+  
+  # Read texts
+  cat("Reading TXT files...\n")
+  texts <- read_text_files(folder_path)
+  cat("Total texts read:", length(texts), "\n\n")
+  
+  # Run algorithm
+  result <- bin_covering_algorithm(texts, threshold = 100)
+  
+  # Print results
+  print_results(result)
+  
+  # Manage files
+  cat("\n\n")
+  processed_folder <- manage_processed_files(result, folder_path)
+  
+  cat("\n========================================\n")
+  cat("Process completed successfully!\n")
+  cat("Processed folder:", processed_folder, "\n")
+  cat("========================================\n")
+  
+  return(list(result = result, processed_folder = processed_folder))
+}
+
+# Run the main function
+main()

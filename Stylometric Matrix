@@ -1,0 +1,382 @@
+library(shiny)
+library(stylo)
+library(RColorBrewer)
+
+options(shiny.maxRequestSize = 200*1024^2)
+
+remove_greek_accents <- function(text) {
+  accents <- c(
+    "ά" = "α", "έ" = "ε", "ή" = "η", "ί" = "ι", "ό" = "ο", "ύ" = "υ", "ώ" = "ω",
+    "ὰ" = "α", "ὲ" = "ε", "ὴ" = "η", "ὶ" = "ι", "ὸ" = "ο", "ὺ" = "υ", "ὼ" = "ω",
+    "ᾶ" = "α", "ῆ" = "η", "ῖ" = "ι", "ῦ" = "υ", "ῶ" = "ω",
+    "ἀ" = "α", "ἁ" = "α", "ἂ" = "α", "ἃ" = "α", "ἄ" = "α", "ἅ" = "α", "ἆ" = "α", "ἇ" = "α",
+    "ᾀ" = "α", "ᾁ" = "α", "ᾂ" = "α", "ᾃ" = "α", "ᾄ" = "α", "ᾅ" = "α", "ᾆ" = "α", "ᾇ" = "α",
+    "ᾰ" = "α", "ᾱ" = "α", "ᾲ" = "α", "ᾳ" = "α", "ᾴ" = "α", "ᾷ" = "α",
+    "ἐ" = "ε", "ἑ" = "ε", "ἒ" = "ε", "ἓ" = "ε", "ἔ" = "ε", "ἕ" = "ε",
+    "ἠ" = "η", "ἡ" = "η", "ἢ" = "η", "ἣ" = "η", "ἤ" = "η", "ἥ" = "η", "ἦ" = "η", "ἧ" = "η",
+    "ᾐ" = "η", "ᾑ" = "η", "ᾒ" = "η", "ᾓ" = "η", "ᾔ" = "η", "ᾕ" = "η", "ᾖ" = "η", "ᾗ" = "η",
+    "ῂ" = "η", "ῃ" = "η", "ῄ" = "η", "ῇ" = "η",
+    "ἰ" = "ι", "ἱ" = "ι", "ἲ" = "ι", "ἳ" = "ι", "ἴ" = "ι", "ἵ" = "ι", "ἶ" = "ι", "ἷ" = "ι",
+    "ῐ" = "ι", "ῑ" = "ι", "ῒ" = "ι", "ΐ" = "ι", "ῖ" = "ι", "ῗ" = "ι",
+    "ὀ" = "ο", "ὁ" = "ο", "ὂ" = "ο", "ὃ" = "ο", "ὄ" = "ο", "ὅ" = "ο",
+    "ὐ" = "υ", "ὑ" = "υ", "ὒ" = "υ", "ὓ" = "υ", "ὔ" = "υ", "ὕ" = "υ", "ὖ" = "υ", "ὗ" = "υ",
+    "ῠ" = "υ", "ῡ" = "υ", "ῢ" = "υ", "ΰ" = "υ", "ῦ" = "υ", "ῧ" = "υ",
+    "ὠ" = "ω", "ὡ" = "ω", "ὢ" = "ω", "ὣ" = "ω", "ὤ" = "ω", "ὥ" = "ω", "ὦ" = "ω", "ὧ" = "ω",
+    "ᾠ" = "ω", "ᾡ" = "ω", "ᾢ" = "ω", "ᾣ" = "ω", "ᾤ" = "ω", "ᾥ" = "ω", "ᾦ" = "ω", "ᾧ" = "ω",
+    "ῲ" = "ω", "ῳ" = "ω", "ῴ" = "ω", "ῷ" = "ω",
+    "ῤ" = "ρ", "ῥ" = "ρ"
+  )
+  
+  for(i in seq_along(accents)) {
+    text <- gsub(names(accents)[i], accents[i], text, fixed = TRUE)
+  }
+  return(text)
+}
+
+greek_stopwords <- c(
+  "και", "δε", "του", "το", "την", "των", "ο", "εν", "τον", "η", 
+  "γαρ", "της", "τα", "τω", "μεν", "ου", "αυτου", "επι", "μη", "τη", 
+  "κατα", "οι", "τε", "δια", "τησ", "οτι", "εις", "ως", "ουκ", "περι",
+  "ει", "τοις", "εκ", "αλλα", "τους", "προς", "τουτο", "αν", "απο",
+  "αυτον", "ειναι", "αυτων", "αλλ", "ην", "ταυτα", "εστιν", "τι",
+  "σου", "τας", "αυτω", "εισ", "εστι", "μου", "ουν", "μετα", "υπο",
+  "τοισ", "ωσ", "εξ", "παρα", "δ", "τουσ", "ημων", "ων", "προσ", "δι",
+  "τουτων", "τις", "δη", "ουδε", "α", "θεον", "ινα", "ημιν", "φησι",
+  "αι", "με", "τασ", "καθ", "ουτω", "τινα", "ουτως", "αυτοις", "αυτη",
+  "εγω", "γε", "κατ", "ουχ", "αυτην", "παρ", "σε", "ταις", "ον", "ουτε",
+  "αυτος", "αυτους", "προ", "επ", "σοι", "ωσπερ", "μοι", "τουτου", "υπερ",
+  "ω", "ετι", "τοινυν"
+)
+
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      body {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        min-height: 100vh;
+      }
+      .container-fluid {
+        width: 100% !important;
+        max-width: 900px !important;
+        margin: 0 auto !important;
+        padding: 20px !important;
+        direction: rtl;
+      }
+      .control-container {
+        background: white;
+        border-radius: 15px;
+        padding: 30px;
+        margin: 20px 0;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      }
+      .results-container {
+        background: white;
+        border-radius: 15px;
+        padding: 30px;
+        margin: 20px 0;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      }
+      h2 {
+        color: #667eea;
+        text-align: center;
+        margin-bottom: 30px;
+        font-weight: 600;
+      }
+      h3 {
+        color: #667eea;
+        text-align: center;
+        margin-bottom: 20px;
+        font-weight: 600;
+      }
+      .param-box {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 10px;
+        margin: 20px 0;
+      }
+      .btn-analyze {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 12px 40px;
+        border-radius: 25px;
+        font-size: 16px;
+        font-weight: 600;
+        width: 100%;
+        margin-top: 20px;
+        cursor: pointer;
+        transition: transform 0.2s;
+      }
+      .btn-analyze:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+      }
+      .info-text {
+        color: #6c757d;
+        font-size: 13px;
+        margin-top: 5px;
+      }
+    "))
+  ),
+  
+  div(class = "control-container",
+    h2("ניתוח סטיילומטרי - מטריצת מרחקים"),
+    
+    div(class = "param-box",
+      fileInput("files", 
+                "בחר קבצי TXT (לפחות 2 קבצים)",
+                multiple = TRUE,
+                accept = c(".txt"),
+                buttonLabel = "בחר קבצים...",
+                placeholder = "לא נבחרו קבצים"),
+      div(class = "info-text", 
+          "כל קובץ עם ~100 מילים")
+    ),
+    
+    div(class = "param-box",
+      selectInput("distance_method",
+                  "בחר מודל מרחק:",
+                  choices = c(
+                    "Classic Delta (Burrows)" = "delta",
+                    "Cosine Distance" = "cosine",
+                    "Wurzburg (Cosine Delta)" = "wurzburg",
+                    "Eder's Delta" = "eder",
+                    "Manhattan Distance" = "manhattan",
+                    "Euclidean Distance" = "euclidean",
+                    "Canberra Distance" = "canberra"
+                  ),
+                  selected = "wurzburg"),
+      div(class = "info-text",
+          "Wurzburg ו-Classic Delta מומלצים לטקסטים עתיקים")
+    ),
+    
+    div(class = "param-box",
+      sliderInput("mfw",
+                  "מספר המילים הנפוצות ביותר:",
+                  min = 10, max = 200, value = 50, step = 10),
+      div(class = "info-text",
+          "ניתוח יתבסס על 50 המילים הנפוצות ביותר בקורפוס")
+    ),
+    
+    div(class = "param-box",
+      selectInput("color_scheme",
+                  "בחר פלטת צבעים:",
+                  choices = c(
+                    "סגול-צהוב" = "purple_yellow",
+                    "כחול-אדום" = "blue_red",
+                    "ירוק-כתום" = "green_orange",
+                    "תכלת-ורוד" = "cyan_pink"
+                  ),
+                  selected = "purple_yellow"),
+      div(class = "info-text",
+          "גרדיאנט בין שני צבעים מנוגדים")
+    ),
+    
+    actionButton("analyze", "הרץ ניתוח", class = "btn-analyze")
+  ),
+  
+  uiOutput("results_ui")
+)
+
+server <- function(input, output, session) {
+  
+  analysis_data <- reactiveVal(NULL)
+  
+  observeEvent(input$analyze, {
+    req(input$files)
+    
+    if(nrow(input$files) < 2) {
+      showNotification("נדרשים לפחות 2 קבצים לניתוח", type = "error")
+      return()
+    }
+    
+    withProgress(message = 'מעבד טקסטים...', value = 0, {
+      
+      incProgress(0.2, detail = "קורא קבצים...")
+      
+      texts <- list()
+      file_names <- c()
+      
+      for(i in 1:nrow(input$files)) {
+        text <- readLines(input$files$datapath[i], 
+                         encoding = "UTF-8", 
+                         warn = FALSE)
+        text <- paste(text, collapse = " ")
+        
+        text <- remove_greek_accents(text)
+        text <- tolower(text)
+        text <- gsub("[[:punct:]]", " ", text)
+        text <- gsub("[0-9]", " ", text)
+        
+        words <- unlist(strsplit(text, "\\s+"))
+        words <- words[words != ""]
+        words <- words[!words %in% greek_stopwords]
+        
+        texts[[i]] <- paste(words, collapse = " ")
+        file_names[i] <- input$files$name[i]
+      }
+      
+      incProgress(0.3, detail = "מחשב תדירויות...")
+      
+      corpus_text <- paste(texts, collapse = " ")
+      all_words <- unlist(strsplit(corpus_text, "\\s+"))
+      word_freq <- sort(table(all_words), decreasing = TRUE)
+      top_words <- names(word_freq)[1:min(input$mfw, length(word_freq))]
+      
+      freq_matrix <- matrix(0, nrow = length(texts), ncol = length(top_words))
+      rownames(freq_matrix) <- file_names
+      colnames(freq_matrix) <- top_words
+      
+      for(i in 1:length(texts)) {
+        words <- unlist(strsplit(texts[[i]], "\\s+"))
+        for(j in 1:length(top_words)) {
+          freq_matrix[i, j] <- sum(words == top_words[j]) / length(words)
+        }
+      }
+      
+      incProgress(0.5, detail = "מחשב מרחקים...")
+      
+      dist_matrix <- switch(input$distance_method,
+        "delta" = {
+          z_scores <- scale(freq_matrix)
+          as.matrix(dist(z_scores, method = "manhattan"))
+        },
+        "cosine" = {
+          cos_sim <- freq_matrix %*% t(freq_matrix) / 
+                    (sqrt(rowSums(freq_matrix^2)) %o% sqrt(rowSums(freq_matrix^2)))
+          as.matrix(1 - cos_sim)
+        },
+        "wurzburg" = {
+          z_scores <- scale(freq_matrix)
+          cos_sim <- z_scores %*% t(z_scores) / 
+                    (sqrt(rowSums(z_scores^2)) %o% sqrt(rowSums(z_scores^2)))
+          as.matrix(1 - cos_sim)
+        },
+        "eder" = {
+          sqrt_freq <- sqrt(freq_matrix)
+          as.matrix(dist(sqrt_freq, method = "manhattan"))
+        },
+        "manhattan" = {
+          as.matrix(dist(freq_matrix, method = "manhattan"))
+        },
+        "euclidean" = {
+          as.matrix(dist(freq_matrix, method = "euclidean"))
+        },
+        "canberra" = {
+          as.matrix(dist(freq_matrix, method = "canberra"))
+        }
+      )
+      
+      sorted_names <- sort(rownames(dist_matrix))
+      dist_matrix <- dist_matrix[sorted_names, sorted_names]
+      
+      incProgress(0.8, detail = "יוצר ויזואליזציה...")
+      
+      analysis_data(list(
+        dist_matrix = dist_matrix,
+        file_names = sorted_names,
+        method = input$distance_method,
+        color_scheme = input$color_scheme,
+        top_words = top_words,
+        freq_matrix = freq_matrix
+      ))
+      
+      incProgress(1.0, detail = "הושלם!")
+    })
+  })
+  
+  output$results_ui <- renderUI({
+    req(analysis_data())
+    
+    div(class = "results-container",
+      h3("תוצאות הניתוח"),
+      plotOutput("heatmap_plot", width = "100%", height = "600px"),
+      hr(),
+      downloadButton("download_matrix", "הורד מטריצה (CSV)", 
+                    style = "margin: 10px 5px;"),
+      downloadButton("download_plot", "הורד מפת חום (PNG)",
+                    style = "margin: 10px 5px;")
+    )
+  })
+  
+  output$heatmap_plot <- renderPlot({
+    req(analysis_data())
+    
+    data <- analysis_data()
+    dist_mat <- data$dist_matrix
+    
+    color_palette <- switch(data$color_scheme,
+      "purple_yellow" = colorRampPalette(c("#9B59B6", "#F39C12"))(100),
+      "blue_red" = colorRampPalette(c("#3498DB", "#E74C3C"))(100),
+      "green_orange" = colorRampPalette(c("#27AE60", "#E67E22"))(100),
+      "cyan_pink" = colorRampPalette(c("#16A085", "#E91E63"))(100)
+    )
+    
+    heatmap(dist_mat,
+            col = color_palette,
+            scale = "none",
+            Rowv = NA,
+            Colv = NA,
+            margins = c(12, 12),
+            cexRow = 0.65,
+            cexCol = 0.65,
+            main = paste("מפת חום - מרחקים סטיילומטריים\nשיטה:", 
+                        c("delta" = "Classic Delta (Burrows)",
+                          "cosine" = "Cosine Distance",
+                          "wurzburg" = "Wurzburg (Cosine Delta)",
+                          "eder" = "Eder's Delta",
+                          "manhattan" = "Manhattan",
+                          "euclidean" = "Euclidean",
+                          "canberra" = "Canberra")[data$method]),
+            xlab = "",
+            ylab = "",
+            symm = TRUE,
+            revC = FALSE)
+  })
+  
+  output$download_matrix <- downloadHandler(
+    filename = function() {
+      paste0("distance_matrix_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      data <- analysis_data()
+      write.csv(data$dist_matrix, file, fileEncoding = "UTF-8", row.names = TRUE)
+    }
+  )
+  
+  output$download_plot <- downloadHandler(
+    filename = function() {
+      paste0("heatmap_", Sys.Date(), ".png")
+    },
+    content = function(file) {
+      data <- analysis_data()
+      dist_mat <- data$dist_matrix
+      
+      color_palette <- switch(data$color_scheme,
+        "purple_yellow" = colorRampPalette(c("#9B59B6", "#F39C12"))(100),
+        "blue_red" = colorRampPalette(c("#3498DB", "#E74C3C"))(100),
+        "green_orange" = colorRampPalette(c("#27AE60", "#E67E22"))(100),
+        "cyan_pink" = colorRampPalette(c("#16A085", "#E91E63"))(100)
+      )
+      
+      png(file, width = 3200, height = 3200, res = 300)
+      heatmap(dist_mat,
+              col = color_palette,
+              scale = "none",
+              Rowv = NA,
+              Colv = NA,
+              margins = c(12, 12),
+              cexRow = 0.65,
+              cexCol = 0.65,
+              main = "מפת חום - מרחקים סטיילומטריים",
+              xlab = "",
+              ylab = "",
+              symm = TRUE,
+              revC = FALSE)
+      dev.off()
+    }
+  )
+}
+
+shinyApp(ui = ui, server = server)

@@ -1,0 +1,729 @@
+library(shiny)
+library(stringi)
+library(shinyFiles)
+library(visNetwork)
+
+# ============================================================
+#  UTILITY FUNCTIONS
+# ============================================================
+
+remove_accents <- function(text) {
+  stri_trans_general(text, "NFD; [:Nonspacing Mark:] Remove; NFC")
+}
+
+normalize_greek <- function(word) {
+  tolower(remove_accents(word))
+}
+
+get_greek_stem <- function(word) {
+  normalized <- normalize_greek(word)
+  endings <- c("ομαι","εσθαι","ομεν","ουσι","ουσιν","ομεθα","εσθε","ονται",
+               "ειν","ατο","αντο","ματος","ματων","ματι","ματα",
+               "ων","οις","ους","αις","ας","ης","ην",
+               "ος","ου","ον","οι","αι","α","η","ε")
+  for (ending in endings) {
+    if (grepl(paste0(ending,"$"), normalized) && nchar(normalized) > nchar(ending)+2)
+      return(sub(paste0(ending,"$"), "", normalized))
+  }
+  normalized
+}
+
+greek_stopwords <- c(
+  "και","δε","του","το","την","των","ο","εν","τον","η",
+  "γαρ","της","τα","τω","μεν","ου","αυτου","επι","μη","τη",
+  "κατα","οι","τε","δια","τησ","οτι","εις","ως","ουκ","περι",
+  "ει","τοις","εκ","αλλα","τους","προς","τουτο","αν","απο",
+  "αυτον","ειναι","αυτων","αυτος","αυτοσ","αυτης","αυτοισ","αυτουσ",
+  "αλλ","ην","ταυτα","εστιν","τι","σου","τας","αυτω","εισ","εστι",
+  "μου","ουν","μετα","υπο","τοισ","ωσ","εξ","παρα","δ","τουσ",
+  "ημων","ων","προσ","δι","τουτων","τις","δη","ουδε","α","θεον",
+  "ινα","ημιν","φησι","με","τασ","καθ","ουτω","τινα","ουτως",
+  "αυτοις","αυτη","εγω","γε","κατ","ουχ","αυτην","παρ","σε",
+  "ταις","ον","ουτε","αυτους","προ","επ","σοι","ωσπερ","μοι",
+  "τουτου","υπερ","ω","ετι","τοινυν","αυτο","υμων","επει","εαν",
+  "πως","εσται","ημας","επειδη","ι","τισ","β","τουτον","ταυτην",
+  "ωστε","οτε","τοτε","ε","συ","εφ","διο","τουτοις","ειτα","αρα",
+  "υμιν","οιον","υπ","ηδη","τινι","δει","εθνων","αυτα","συν",
+  "ταισ","εαυτου","κ","ειη","τ","ουτος","ιιι","μην","τουτω",
+  "τινος","μηδε","γ","εαυτον","οις","ουτωσ","εχειν","ενταυθα",
+  "γουν","ημασ","οπερ","απ","καν","οσα","ιι","μεντοι","ος",
+  "εμου","τοιαυτα","αλλων","ομοιως","αμα","τινες","ουδ","μηδεν",
+  "ουτοι","αυτοι","οντα","ετερον","υμας","μητε","εισι","αλλο",
+  "εως","ια","τοιουτον"
+)
+
+# ============================================================
+#  CORPUS FUNCTIONS
+# ============================================================
+
+read_corpus_streaming <- function(folder_path, update_progress = NULL) {
+  files <- list.files(folder_path, pattern = "\\.txt$", full.names = TRUE)
+  if (length(files) == 0) return(NULL)
+  corpus_words <- character(0)
+  corpus_files <- character(0)
+  corpus_positions <- integer(0)
+  for (i in seq_along(files)) {
+    filename <- basename(files[i])
+    if (!is.null(update_progress))
+      update_progress(value = i / length(files),
+                      detail = sprintf("[%d/%d] %s", i, length(files), filename))
+    tryCatch({
+      text  <- paste(readLines(files[i], encoding = "UTF-8", warn = FALSE), collapse = " ")
+      words <- unlist(strsplit(text, "\\W+"))
+      words <- words[words != ""]
+      if (length(words) > 0) {
+        corpus_words     <- c(corpus_words, words)
+        corpus_files     <- c(corpus_files, rep(filename, length(words)))
+        corpus_positions <- c(corpus_positions, seq_along(words))
+      }
+    }, error = function(e) NULL)
+  }
+  list(words = corpus_words, files = corpus_files, positions = corpus_positions)
+}
+
+build_fast_index <- function(corpus_data, update_progress = NULL) {
+  words <- corpus_data$words
+  if (!is.null(update_progress)) update_progress(value = 0.3, detail = "מנרמל מילים")
+  normalized <- normalize_greek(words)
+  if (!is.null(update_progress)) update_progress(value = 0.5, detail = "יוצר אינדקס")
+  word_positions <- split(seq_along(normalized), normalized)
+  if (!is.null(update_progress)) update_progress(value = 0.8, detail = "בונה שורשים")
+  unique_words  <- names(word_positions)
+  stems         <- sapply(unique_words, get_greek_stem, USE.NAMES = FALSE)
+  stem_to_words <- split(unique_words, stems)
+  if (!is.null(update_progress)) update_progress(value = 1, detail = "סיים!")
+  list(corpus_words  = words,
+       corpus_files  = corpus_data$files,
+       corpus_positions = corpus_data$positions,
+       normalized    = normalized,
+       word_positions = word_positions,
+       stem_to_words  = stem_to_words,
+       total_words    = length(words),
+       unique_words   = length(word_positions))
+}
+
+save_index <- function(index_obj, filepath) {
+  saveRDS(index_obj, filepath)
+}
+
+load_index <- function(filepath) {
+  readRDS(filepath)
+}
+
+# ============================================================
+#  SEARCH FUNCTION
+# ============================================================
+
+search_and_build_contexts <- function(index_obj, query_type, query, window = 10) {
+  nq        <- normalize_greek(query)
+  positions <- NULL
+  matched_words <- NULL
+
+  if (query_type == "exact") {
+    positions     <- index_obj$word_positions[[nq]]
+    matched_words <- nq
+  } else if (query_type == "stem") {
+    stem          <- get_greek_stem(query)
+    words_in_stem <- index_obj$stem_to_words[[stem]]
+    if (!is.null(words_in_stem)) {
+      positions     <- unlist(index_obj$word_positions[words_in_stem])
+      matched_words <- words_in_stem
+    }
+  } else if (query_type == "substring") {
+    all_words <- names(index_obj$word_positions)
+    mw        <- all_words[grepl(nq, all_words, fixed = TRUE)]
+    if (length(mw) > 0) { positions <- unlist(index_obj$word_positions[mw]); matched_words <- mw }
+  } else if (query_type == "pattern") {
+    all_words <- names(index_obj$word_positions)
+    mw        <- grep(nq, all_words, value = TRUE)
+    if (length(mw) > 0) { positions <- unlist(index_obj$word_positions[mw]); matched_words <- mw }
+  }
+
+  if (is.null(positions) || length(positions) == 0)
+    return(list(results = NULL, matched_words = matched_words))
+
+  n_total  <- length(index_obj$corpus_words)
+  contexts <- sapply(positions, function(pos) {
+    paste(index_obj$corpus_words[max(1, pos - window):min(n_total, pos + window)], collapse = " ")
+  })
+
+  results <- data.frame(
+    position = positions,
+    file     = index_obj$corpus_files[positions],
+    word     = index_obj$corpus_words[positions],
+    context  = contexts,
+    stringsAsFactors = FALSE
+  )
+  list(results = results, matched_words = matched_words)
+}
+
+# ============================================================
+#  CONTEXT NETWORK FUNCTIONS
+# ============================================================
+
+build_context_vectors <- function(index_obj, positions, window = 10) {
+  n_total      <- length(index_obj$corpus_words)
+  files        <- index_obj$corpus_files[positions]
+  unique_files <- unique(files)
+  ctx_list     <- lapply(unique_files, function(fname) {
+    pos_in_file <- positions[files == fname]
+    unlist(lapply(pos_in_file, function(pos) {
+      idx <- setdiff(max(1, pos - window):min(n_total, pos + window), pos)
+      normalize_greek(index_obj$corpus_words[idx])
+    }))
+  })
+  names(ctx_list) <- unique_files
+  ctx_list
+}
+
+compute_context_similarity <- function(ctx_list, stopwords = greek_stopwords,
+                                        min_char = 2) {
+  all_words <- unique(unlist(ctx_list))
+  all_words <- all_words[!all_words %in% stopwords & nchar(all_words) >= min_char]
+  if (length(all_words) == 0 || length(ctx_list) < 2) return(NULL)
+
+  file_names <- names(ctx_list)
+  mat <- matrix(0, nrow = length(file_names), ncol = length(all_words),
+                dimnames = list(file_names, all_words))
+  for (fname in file_names) {
+    tbl    <- table(ctx_list[[fname]])
+    common <- intersect(names(tbl), all_words)
+    mat[fname, common] <- as.numeric(tbl[common])
+  }
+
+  # TF normalisation
+  rs      <- rowSums(mat)
+  mat_n   <- mat / ifelse(rs == 0, 1, rs)
+
+  cos_sim <- function(a, b) {
+    d <- sqrt(sum(a^2)) * sqrt(sum(b^2))
+    if (d == 0) return(0)
+    sum(a * b) / d
+  }
+
+  n       <- nrow(mat_n)
+  sim_mat <- matrix(0, n, n, dimnames = list(file_names, file_names))
+  for (i in seq_len(n - 1))
+    for (j in (i + 1):n) {
+      s <- cos_sim(mat_n[i, ], mat_n[j, ])
+      sim_mat[i, j] <- s
+      sim_mat[j, i] <- s
+    }
+  sim_mat
+}
+
+# ============================================================
+#  COLOUR HELPER (shared by both networks)
+# ============================================================
+
+get_node_color <- function(degree, min_degree, max_degree) {
+  if (max_degree == min_degree) return("#8B7AB8")
+  normalized <- (degree - min_degree) / (max_degree - min_degree)
+  light_rgb  <- col2rgb("#D4C5E8")
+  dark_rgb   <- col2rgb("#1E3A8A")
+  r <- round(light_rgb[1] + (dark_rgb[1] - light_rgb[1]) * normalized)
+  g <- round(light_rgb[2] + (dark_rgb[2] - light_rgb[2]) * normalized)
+  b <- round(light_rgb[3] + (dark_rgb[3] - light_rgb[3]) * normalized)
+  rgb(r, g, b, maxColorValue = 255)
+}
+
+edge_color <- function(v) {
+  if (v >= 0.6) "#7B68B0" else if (v >= 0.4) "#9B8BC4" else "#C4B8E2"
+}
+
+# ============================================================
+#  UI
+# ============================================================
+
+ui <- fluidPage(
+  tags$head(tags$style(HTML("
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f5f5f7;
+      padding: 20px;
+    }
+    .main-container {
+      max-width: 1800px;
+      margin: 0 auto;
+      background: white;
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    h2 { color: #1d1d1f; font-weight: 700; font-size: 30px; margin-bottom: 6px; }
+    h4 { color: #424245; font-weight: 600; margin-top: 22px; margin-bottom: 10px; }
+    .nav-tabs > li > a { font-size: 15px; font-weight: 500; }
+    .info-box {
+      background-color: #e8f4fd;
+      border-left: 4px solid #0071e3;
+      padding: 13px 16px;
+      border-radius: 6px;
+      margin: 14px 0;
+      font-size: 14px;
+    }
+    .sidebar-panel {
+      background: #f9f9fb;
+      border-radius: 10px;
+      padding: 20px 16px;
+      border: 1px solid #e5e5ea;
+    }
+    .btn-primary  { background-color: #0071e3; border: none; border-radius: 8px;
+                    font-weight: 500; width: 100%; padding: 10px; font-size: 14px; }
+    .btn-warning  { background-color: #ff9f0a; border: none; border-radius: 8px;
+                    font-weight: 500; width: 100%; padding: 10px; font-size: 14px; }
+    .btn-success  { background-color: #34c759; border: none; border-radius: 8px;
+                    font-weight: 500; width: 100%; padding: 10px; font-size: 14px; }
+    .result-item  {
+      background: #f8f9fa;
+      padding: 11px 14px;
+      margin: 7px 0;
+      border-radius: 7px;
+      border-right: 4px solid #3498db;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .results-scroll { max-height: 580px; overflow-y: auto; }
+    .stat-bar {
+      background: #f0f0f5;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 12px;
+    }
+    .legend-item { display: inline-block; margin-right: 18px; font-size: 13px; }
+    .legend-color {
+      display: inline-block; width: 18px; height: 18px;
+      border-radius: 50%; margin-right: 5px; vertical-align: middle;
+      border: 2px solid #333;
+    }
+    hr { border-color: #e5e5ea; margin: 18px 0; }
+  "))),
+
+  div(class = "main-container",
+
+    # ── Header ──────────────────────────────────────────────
+    h2("🏛️ Greek Concordance & Contextual Network"),
+    p(style = "color:#86868b; margin-bottom:24px;",
+      "קונקורדנציה ליוונית עתיקה עם ניתוח רשתות הקשרי"),
+
+    # ── Layout: sidebar + main ───────────────────────────────
+    fluidRow(
+
+      # ── SIDEBAR ───────────────────────────────────────────
+      column(3,
+        div(class = "sidebar-panel",
+
+          h4("📂 קורפוס"),
+          shinyDirButton("folder", "בחר תיקייה", "בחר תיקייה עם קבצי TXT",
+                         style = "width:100%;border-radius:8px;"),
+          textOutput("folder_selected"),
+
+          hr(),
+          h4("💾 אינדקס"),
+          actionButton("save_index_btn", "💾 שמור אינדקס", class = "btn-warning"),
+          br(), br(),
+          fileInput("load_index_file", "טען אינדקס (.rds):",
+                    accept = ".rds", width = "100%"),
+
+          hr(),
+          h4("🔍 חיפוש"),
+          selectInput("search_type", "סוג חיפוש:",
+                      choices = c("מדויק"    = "exact",
+                                  "שורש"     = "stem",
+                                  "חלקי"     = "substring",
+                                  "Regex"    = "pattern")),
+          textInput("query", "מילה לחיפוש:",
+                    placeholder = "π.χ. λόγος"),
+
+          sliderInput("ctx_window", "חלון הקשר (±מילים):",
+                      min = 3, max = 25, value = 10, step = 1),
+
+          actionButton("search_btn", "🔍 חפש", class = "btn-primary"),
+
+          hr(),
+          h4("📊 סטטוס"),
+          verbatimTextOutput("corpus_info")
+        )
+      ),
+
+      # ── MAIN PANEL ────────────────────────────────────────
+      column(9,
+        tabsetPanel(id = "main_tabs",
+
+          # ── TAB 1: CONCORDANCE ──────────────────────────
+          tabPanel("📜 קונקורדנציה",
+            br(),
+            div(class = "stat-bar", textOutput("results_title")),
+            conditionalPanel(
+              condition = "input.search_type == 'stem' || input.search_type == 'substring'",
+              wellPanel(style = "background:#e8f4f8; padding:12px;",
+                h5("📈 צורות שנמצאו:"),
+                verbatimTextOutput("matched_words"))
+            ),
+            div(class = "results-scroll",
+              uiOutput("results_display"))
+          ),
+
+          # ── TAB 2: CONTEXT NETWORK ───────────────────────
+          tabPanel("🕸️ רשת הקשרית",
+            br(),
+            div(class = "info-box",
+              tags$strong("רשת דמיון הקשרי סביב מילת החיפוש"),
+              tags$br(),
+              "קצה בין שני טקסטים = דמיון קוסינוס בין וקטורי ה-context סביב כל מופע (±חלון).",
+              tags$br(),
+              "גודל הצומת = מספר מופעים של המילה בקובץ. צבע = דרגת חיבוריות."
+            ),
+
+            fluidRow(
+              column(4,
+                sliderInput("ctx_threshold", "סף דמיון מינימלי:",
+                            min = 0.05, max = 0.90, value = 0.20, step = 0.05)
+              ),
+              column(4,
+                checkboxInput("ctx_remove_stopwords", "הסר מילות עצור", value = TRUE),
+                numericInput("ctx_min_char", "אורך מילה מינימלי:", value = 2, min = 1, max = 5)
+              ),
+              column(4,
+                br(),
+                actionButton("build_ctx_network", "🕸️ צור רשת",
+                             class = "btn-primary",
+                             style = "margin-top:4px;")
+              )
+            ),
+
+            div(class = "stat-bar", textOutput("ctx_network_stats")),
+
+            div(style = "background:#f9f9fb; padding:12px; border-radius:8px; margin-bottom:12px;",
+              uiOutput("ctx_color_legend")),
+
+            visNetworkOutput("ctx_network_plot", height = "680px"),
+
+            br(),
+            downloadButton("download_ctx_html", "💾 הורד רשת (HTML)",
+                           class = "btn-success")
+          )
+        )
+      )
+    )
+  )
+)
+
+# ============================================================
+#  SERVER
+# ============================================================
+
+server <- function(input, output, session) {
+
+  rv <- reactiveValues(
+    folder_path    = NULL,
+    index_obj      = NULL,
+    search_results = NULL,
+    matched_words  = NULL
+  )
+
+  # ── Folder chooser ─────────────────────────────────────────
+  volumes <- c(Home = fs::path_home(), getVolumes()())
+  shinyDirChoose(input, "folder", roots = volumes, session = session)
+
+  observeEvent(input$folder, {
+    if (!is.integer(input$folder)) {
+      rv$folder_path <- parseDirPath(roots = volumes, input$folder)
+      if (length(rv$folder_path) > 0) {
+        index_file <- file.path(rv$folder_path, ".concordance_index.rds")
+        if (file.exists(index_file)) {
+          showModal(modalDialog(
+            title = "🔔 נמצא אינדקס שמור",
+            HTML("<p>נמצא אינדקס קיים בתיקייה.</p>
+                  <p><b>טען קיים</b> — מהיר (שניות)</p>
+                  <p><b>בנה מחדש</b> — איטי יותר</p>"),
+            footer = tagList(
+              actionButton("load_existing", "📥 טען קיים (מומלץ)", class = "btn-success"),
+              actionButton("build_new",     "🔨 בנה מחדש",         class = "btn-warning"),
+              modalButton("❌ ביטול")),
+            size = "s"))
+        } else {
+          build_index_from_folder(rv$folder_path)
+        }
+      }
+    }
+  })
+
+  observeEvent(input$load_existing, {
+    removeModal()
+    index_file <- file.path(rv$folder_path, ".concordance_index.rds")
+    withProgress(message = "טוען אינדקס...", value = 0.5, {
+      rv$index_obj <- load_index(index_file)
+    })
+    showNotification(
+      sprintf("✅ אינדקס נטען — %s מילים, %s ייחודיות",
+              format(rv$index_obj$total_words,  big.mark = ","),
+              format(rv$index_obj$unique_words, big.mark = ",")),
+      type = "message", duration = 8)
+  })
+
+  observeEvent(input$build_new, {
+    removeModal()
+    build_index_from_folder(rv$folder_path)
+  })
+
+  build_index_from_folder <- function(folder_path) {
+    progress <- Progress$new(session, min = 0, max = 1)
+    on.exit(progress$close())
+    tryCatch({
+      progress$set(message = "קורא קבצים...", value = 0)
+      corpus_data <- read_corpus_streaming(folder_path,
+        update_progress = function(value, detail)
+          progress$set(message = "קורא קבצים...", value = value * 0.70, detail = detail))
+      if (is.null(corpus_data)) {
+        showNotification("❌ לא נמצאו קבצי TXT", type = "error"); return()
+      }
+      progress$set(message = "בונה אינדקס...", value = 0.70)
+      rv$index_obj <- build_fast_index(corpus_data,
+        update_progress = function(value, detail)
+          progress$set(message = "בונה אינדקס...", value = 0.70 + value * 0.25, detail = detail))
+      progress$set(message = "שומר...", value = 0.96)
+      save_index(rv$index_obj, file.path(folder_path, ".concordance_index.rds"))
+      progress$set(message = "הושלם!", value = 1)
+      showNotification(
+        sprintf("✅ אינדקס מוכן — %s מילים, %s ייחודיות",
+                format(rv$index_obj$total_words,  big.mark = ","),
+                format(rv$index_obj$unique_words, big.mark = ",")),
+        type = "message", duration = 10)
+    }, error = function(e)
+      showNotification(paste("❌ שגיאה:", e$message), type = "error", duration = 10))
+  }
+
+  # ── Save / Load index manually ─────────────────────────────
+  observeEvent(input$save_index_btn, {
+    req(rv$index_obj, rv$folder_path)
+    save_index(rv$index_obj, file.path(rv$folder_path, ".concordance_index.rds"))
+    showNotification("💾 אינדקס נשמר!", type = "message", duration = 4)
+  })
+
+  observeEvent(input$load_index_file, {
+    req(input$load_index_file)
+    withProgress(message = "טוען...", value = 0.5, {
+      rv$index_obj <- load_index(input$load_index_file$datapath)
+    })
+    showNotification(
+      sprintf("✅ אינדקס נטען — %s מילים",
+              format(rv$index_obj$total_words, big.mark = ",")),
+      type = "message", duration = 5)
+  })
+
+  # ── Corpus info ────────────────────────────────────────────
+  output$folder_selected <- renderText({
+    if (!is.null(rv$folder_path)) paste("✅", basename(rv$folder_path))
+    else "❌ לא נבחרה תיקייה"
+  })
+
+  output$corpus_info <- renderText({
+    if (is.null(rv$index_obj)) "⏳ טרם נטען אינדקס"
+    else sprintf("✅ מוכן\n📝 %s מילים\n🔤 %s ייחודיות",
+                 format(rv$index_obj$total_words,  big.mark = ","),
+                 format(rv$index_obj$unique_words, big.mark = ","))
+  })
+
+  # ── Search ─────────────────────────────────────────────────
+  observeEvent(input$search_btn, {
+    req(rv$index_obj, input$query)
+    withProgress(message = "מחפש...", value = 0.5, {
+      result <- search_and_build_contexts(
+        rv$index_obj, input$search_type, input$query,
+        window = input$ctx_window)
+      rv$search_results <- result$results
+      rv$matched_words  <- result$matched_words
+    })
+    if (is.null(rv$search_results) || nrow(rv$search_results) == 0)
+      showNotification("❌ לא נמצאו תוצאות", type = "warning", duration = 5)
+    else
+      showNotification(
+        sprintf("✅ נמצאו %s תוצאות", format(nrow(rv$search_results), big.mark = ",")),
+        type = "message", duration = 5)
+  })
+
+  # ── Concordance tab outputs ────────────────────────────────
+  output$results_title <- renderText({
+    if (!is.null(rv$search_results) && nrow(rv$search_results) > 0)
+      sprintf("נמצאו %s תוצאות עבור «%s» (חלון ±%d)",
+              format(nrow(rv$search_results), big.mark = ","),
+              input$query, input$ctx_window)
+    else if (!is.null(rv$search_results)) "לא נמצאו תוצאות"
+    else "הזן מילה ולחץ חפש"
+  })
+
+  output$matched_words <- renderText({
+    req(rv$matched_words)
+    mw <- rv$matched_words
+    if (length(mw) > 50)
+      paste("נמצאו", length(mw), "צורות (50 ראשונות):\n",
+            paste(head(sort(mw), 50), collapse = ", "), "\n...")
+    else
+      paste("נמצאו", length(mw), "צורות:\n", paste(sort(mw), collapse = ", "))
+  })
+
+  output$results_display <- renderUI({
+    req(rv$search_results)
+    if (nrow(rv$search_results) == 0)
+      return(p("אין תוצאות.", style = "color:#999;"))
+    max_display   <- 200
+    results_subset <- head(rv$search_results, max_display)
+    items <- lapply(seq_len(nrow(results_subset)), function(i) {
+      r <- results_subset[i, ]
+      div(class = "result-item",
+        tags$b(sprintf("%d.  [%s]  מיקום: %s", i, r$file,
+                       format(r$position, big.mark = ","))),
+        div(style = "margin-top:4px; color:#333;", r$context))
+    })
+    result_ui <- do.call(tagList, items)
+    if (nrow(rv$search_results) > max_display)
+      result_ui <- tagList(result_ui,
+        div(style = "text-align:center; padding:16px; color:#999;",
+            sprintf("מוצגים %d מתוך %s תוצאות",
+                    max_display, format(nrow(rv$search_results), big.mark = ","))))
+    result_ui
+  })
+
+  # ── Context network ────────────────────────────────────────
+  ctx_network_data <- eventReactive(input$build_ctx_network, {
+    req(rv$index_obj, rv$search_results)
+
+    withProgress(message = "בונה רשת הקשרית...", value = 0, {
+      incProgress(0.25, detail = "בונה וקטורי הקשר")
+      ctx_vectors <- build_context_vectors(
+        rv$index_obj,
+        rv$search_results$position,
+        window = input$ctx_window)
+
+      if (length(ctx_vectors) < 2)
+        return(list(error = "נדרשים לפחות 2 קבצים שמכילים את המילה"))
+
+      incProgress(0.50, detail = "מחשב דמיון קוסינוס")
+      sw  <- if (input$ctx_remove_stopwords) greek_stopwords else character(0)
+      sim_mat <- compute_context_similarity(ctx_vectors, stopwords = sw,
+                                             min_char = input$ctx_min_char)
+      if (is.null(sim_mat))
+        return(list(error = "לא ניתן לחשב — vocabulary ריק לאחר סינון"))
+
+      sim_mat[sim_mat < input$ctx_threshold] <- 0
+      diag(sim_mat) <- 0
+
+      edges_idx <- which(sim_mat > 0 & upper.tri(sim_mat), arr.ind = TRUE)
+      if (nrow(edges_idx) == 0)
+        return(list(error = sprintf(
+          "אין קשרים מעל סף %.2f — נסה להוריד את הסף", input$ctx_threshold)))
+
+      node_names  <- rownames(sim_mat)
+      degrees     <- rowSums(sim_mat > 0)
+      min_d       <- min(degrees); max_d <- max(degrees)
+      occ_counts  <- table(rv$search_results$file)
+
+      nodes_df <- data.frame(
+        id    = node_names,
+        label = gsub("\\.txt$", "", node_names),
+        title = mapply(function(nm, deg) {
+          occ <- as.integer(occ_counts[nm])
+          if (is.na(occ)) occ <- 0L
+          paste0("<b>", gsub("\\.txt$", "", nm), "</b><br>",
+                 "מופעים: ", occ, "<br>קשרים: ", deg)
+        }, node_names, degrees, SIMPLIFY = TRUE),
+        value = pmax(1L, as.integer(occ_counts[node_names])),
+        color = sapply(degrees, get_node_color, min_d, max_d),
+        stringsAsFactors = FALSE
+      )
+
+      edges_df <- data.frame(
+        from  = node_names[edges_idx[, 1]],
+        to    = node_names[edges_idx[, 2]],
+        value = sim_mat[edges_idx],
+        title = paste0("דמיון: ", round(sim_mat[edges_idx], 3)),
+        color = sapply(sim_mat[edges_idx], edge_color),
+        stringsAsFactors = FALSE
+      )
+
+      incProgress(1, detail = "הושלם!")
+      list(nodes = nodes_df, edges = edges_df,
+           n_files = length(ctx_vectors),
+           n_edges = nrow(edges_df),
+           min_d = min_d, max_d = max_d,
+           query = input$query, error = NULL)
+    })
+  })
+
+  output$ctx_network_stats <- renderText({
+    d <- ctx_network_data()
+    if (!is.null(d$error)) return(paste("⚠️", d$error))
+    paste0("מילה: «", d$query, "»  |  ",
+           "קבצים ברשת: ", d$n_files, "  |  ",
+           "קשרים: ", d$n_edges, "  |  ",
+           "חלון: ±", input$ctx_window, "  |  ",
+           "סף: ", input$ctx_threshold)
+  })
+
+  output$ctx_color_legend <- renderUI({
+    d <- ctx_network_data()
+    if (!is.null(d$error) || is.null(d$min_d)) return(NULL)
+    lg_deg  <- seq(d$min_d, d$max_d, length.out = 5)
+    lg_col  <- sapply(lg_deg, get_node_color, d$min_d, d$max_d)
+    items   <- lapply(seq_len(5), function(i)
+      div(class = "legend-item",
+        span(class = "legend-color",
+             style = paste0("background-color:", lg_col[i], ";")),
+        span(paste0(round(lg_deg[i]), " קשרים"))))
+    tagList(tags$strong("צבע צומת (סגול → כחול): "), items)
+  })
+
+  make_vis <- function(nodes, edges) {
+    visNetwork(nodes, edges, width = "100%") %>%
+      visNodes(
+        shape = "dot", borderWidth = 2,
+        color = list(border = "#333333",
+                     highlight = list(border = "#000000")),
+        font  = list(size = 16, face = "arial", color = "#1C1C1C",
+                     bold = TRUE, strokeWidth = 3, strokeColor = "#FFFFFF")) %>%
+      visEdges(
+        smooth = list(enabled = TRUE, type = "continuous", roundness = 0.4),
+        width = 2, selectionWidth = 4) %>%
+      visPhysics(
+        solver = "barnesHut",
+        barnesHut = list(gravitationalConstant = -12000,
+                         centralGravity = 0.15,
+                         springLength = 300,
+                         springConstant = 0.008,
+                         damping = 0.5,
+                         avoidOverlap = 0.9),
+        stabilization = list(enabled = TRUE, iterations = 1500,
+                             updateInterval = 50, fit = TRUE)) %>%
+      visInteraction(navigationButtons = TRUE, hover = TRUE,
+                     zoomView = TRUE, dragNodes = TRUE,
+                     tooltipDelay = 80) %>%
+      visOptions(highlightNearest = list(enabled = TRUE, hover = TRUE, degree = 1),
+                 nodesIdSelection = TRUE) %>%
+      visLayout(randomSeed = 42)
+  }
+
+  output$ctx_network_plot <- renderVisNetwork({
+    d <- ctx_network_data()
+    if (!is.null(d$error)) return(NULL)
+    make_vis(d$nodes, d$edges) %>% visNetworkProxy("ctx_network_plot")
+    make_vis(d$nodes, d$edges)
+  })
+
+  output$download_ctx_html <- downloadHandler(
+    filename = function() {
+      safe_q <- gsub("[^a-zA-Zα-ωά-ώ]", "", input$query)
+      paste0("context_network_", safe_q, "_",
+             format(Sys.time(), "%Y%m%d_%H%M%S"), ".html")
+    },
+    content = function(file) {
+      d  <- ctx_network_data()
+      vn <- make_vis(d$nodes, d$edges)
+      visSave(vn, file)
+    }
+  )
+}
+
+# ============================================================
+shinyApp(ui = ui, server = server)

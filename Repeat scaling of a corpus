@@ -1,0 +1,131 @@
+library(shiny)
+library(shinyFiles)
+library(data.table)
+library(stringi)
+library(parallel)
+library(fs)
+
+# ---------- Analysis logic (same as before) ----------
+
+generate_ngram_counts <- function(tokens, n) {
+  len <- length(tokens)
+  if (len < n) return(list(total = 0, repeated_pct = 0))
+  shifted <- lapply(1:n, function(i) tokens[i:(len - n + i)])
+  ngrams <- do.call(stri_paste, c(shifted, sep = "_"))
+  tab <- table(ngrams)
+  total <- length(ngrams)
+  repeated <- total - length(tab)
+  list(total = total, repeated_pct = round(repeated / total * 100, 4))
+}
+
+process_file <- function(filepath) {
+  tryCatch({
+    text <- stri_paste(stri_read_lines(filepath, encoding = "UTF-8"), collapse = " ")
+    tokens <- unlist(stri_split_boundaries(text, type = "word", skip_word_none = TRUE))
+    tokens <- tokens[stri_trim(tokens) != ""]
+    total_words <- length(tokens)
+
+    res <- list(filename = basename(filepath), total_words = total_words)
+    for (n in c(2, 4, 6)) {
+      out <- generate_ngram_counts(tokens, n)
+      res[[paste0("ngram", n, "_repeat_pct")]] <- out$repeated_pct
+    }
+    as.data.table(res)
+  }, error = function(e) {
+    data.table(filename = basename(filepath), total_words = NA,
+               ngram2_repeat_pct = NA, ngram4_repeat_pct = NA, ngram6_repeat_pct = NA)
+  })
+}
+
+analyze_corpus <- function(files) {
+  num_cores <- max(1, detectCores() - 1)
+  # mclapply is not supported on Windows, so fall back to lapply there
+  if (.Platform$OS.type == "windows") {
+    results_list <- lapply(files, process_file)
+  } else {
+    results_list <- mclapply(files, process_file, mc.cores = num_cores)
+  }
+  rbindlist(results_list, fill = TRUE)
+}
+
+# ---------- UI ----------
+
+ui <- fluidPage(
+  titlePanel("N-gram Repetition Analysis for a Corpus"),
+
+  sidebarLayout(
+    sidebarPanel(
+      shinyDirButton("dir", "Select Corpus Folder", "Choose a folder containing .txt files"),
+      br(), br(),
+      verbatimTextOutput("dir_path"),
+      br(),
+      actionButton("run", "Run Analysis", class = "btn-primary"),
+      br(), br(),
+      downloadButton("download_csv", "Download CSV"),
+      br(), br(),
+      helpText("This tool scans all .txt files in the selected folder (including subfolders),
+                calculates the repetition percentage of N-grams of length 2, 4, and 6 for each file
+                independently, and displays/exports the results as a table.")
+    ),
+
+    mainPanel(
+      tableOutput("results_table")
+    )
+  )
+)
+
+# ---------- Server ----------
+
+server <- function(input, output, session) {
+
+  volumes <- c(Home = fs::path_home(), getVolumes()())
+  shinyDirChoose(input, "dir", roots = volumes, session = session)
+
+  selected_dir <- reactive({
+    if (is.null(input$dir)) return(NULL)
+    parseDirPath(volumes, input$dir)
+  })
+
+  output$dir_path <- renderText({
+    dir <- selected_dir()
+    if (is.null(dir) || length(dir) == 0) "No folder selected" else dir
+  })
+
+  results <- eventReactive(input$run, {
+    dir <- selected_dir()
+    if (is.null(dir) || length(dir) == 0) {
+      showNotification("Please select a folder first", type = "error")
+      return(NULL)
+    }
+
+    files <- list.files(dir, pattern = "\\.txt$", full.names = TRUE, recursive = TRUE)
+    if (length(files) == 0) {
+      showNotification("No .txt files found in the selected folder", type = "error")
+      return(NULL)
+    }
+
+    withProgress(message = "Processing files...", value = 0.3, {
+      df <- analyze_corpus(files)
+      incProgress(0.7)
+      df
+    })
+  })
+
+  output$results_table <- renderTable({
+    req(results())
+    results()
+  })
+
+  output$download_csv <- downloadHandler(
+    filename = function() {
+      paste0("ngram_repeat_scores_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      df <- results()
+      if (is.null(df)) df <- data.table(message = "No analysis has been run yet")
+      fwrite(df, file)
+    }
+  )
+}
+
+shinyApp(ui, server)

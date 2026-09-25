@@ -1,11 +1,11 @@
-# התקנת shiny אם אין לך
+# Install shiny if you don't have it
 # install.packages("shiny")
 
 library(shiny)
 
-# --- הגדרת ממשק המשתמש (UI) ---
+# --- Define User Interface (UI) ---
 ui <- fluidPage(
-  # עיצוב מודרני עם CSS מותאם אישית
+  # Modern design with custom CSS
   tags$head(
     tags$style(HTML("
       body {
@@ -76,37 +76,37 @@ ui <- fluidPage(
   div(class = "main-container",
     h2("📁 File Merger Tool"),
     
-    # בחירת קבצים
+    # Select files
     div(
-      span(class = "file-input-label", "בחר קבצי טקסט לאיחוד:"),
+      span(class = "file-input-label", "Select text files to merge:"),
       fileInput("files", NULL, 
                 multiple = TRUE, 
                 accept = c(".txt", "text/plain"),
-                buttonLabel = "בחר קבצים...",
-                placeholder = "לא נבחרו קבצים")
+                buttonLabel = "Browse...",
+                placeholder = "No files selected")
     ),
     
-    # הצגת רשימת הקבצים שנבחרו
+    # Show selected files list
     uiOutput("file_list"),
     
-    # שדה להזנת שם הקובץ המאוחד
+    # Field to enter the merged file name
     div(style = "margin-top: 25px;",
-      span(class = "file-input-label", "שם הקובץ המאוחד:"),
+      span(class = "file-input-label", "Merged file name:"),
       textInput("output_name", NULL, 
                 value = "merged_file",
-                placeholder = "הזן שם קובץ (ללא סיומת)")
+                placeholder = "Enter file name (without extension)")
     ),
     
-    # כפתור לאיחוד והורדה
-    downloadButton("download_merged", "💾 שמור קובץ מאוחד", 
+    # Button to merge and download
+    downloadButton("download_merged", "💾 Save Merged File", 
                    class = "btn-success")
   )
 )
 
-# --- לוגיקת השרת (Server) ---
+# --- Server Logic ---
 server <- function(input, output, session) {
   
-  # הצגת רשימת הקבצים שנבחרו
+  # Show selected files list
   output$file_list <- renderUI({
     req(input$files)
     
@@ -114,14 +114,14 @@ server <- function(input, output, session) {
     file_count <- length(files)
     
     div(id = "file_list",
-      tags$strong(paste("נבחרו", file_count, "קבצים:")),
+      tags$strong(paste(file_count, "files selected:")),
       tags$ul(
         lapply(files, function(f) tags$li(f))
       )
     )
   })
   
-  # פונקציה לאיחוד הקבצים
+  # Function to merge files
   merged_content <- reactive({
     req(input$files)
     
@@ -131,10 +131,10 @@ server <- function(input, output, session) {
       file_path <- input$files$datapath[i]
       file_name <- input$files$name[i]
       
-      # הוספת הפרדה בין קבצים (אופציונלי)
+      # Add separation between files (optional)
       all_content[[length(all_content) + 1]] <- paste0("\n\n========== ", file_name, " ==========\n\n")
       
-      # קריאת תוכן הקובץ
+      # Read file content
       content <- readLines(file_path, warn = FALSE, encoding = "UTF-8")
       all_content[[length(all_content) + 1]] <- content
     }
@@ -142,7 +142,7 @@ server <- function(input, output, session) {
     return(paste(unlist(all_content), collapse = "\n"))
   })
   
-  # הורדת הקובץ המאוחד
+  # Download the merged file
   output$download_merged <- downloadHandler(
     filename = function() {
       output_name <- input$output_name
@@ -157,5 +157,5 @@ server <- function(input, output, session) {
   )
 }
 
-# הרצת האפליקציה
+# Run the application
 shinyApp(ui = ui, server = server)

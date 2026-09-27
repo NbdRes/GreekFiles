@@ -1,5 +1,6 @@
 # Define required packages
-required_packages <- c("shiny", "stylo", "RColorBrewer", "shinycssloaders", "shinyjs")
+required_packages <- c("shiny", "stylo", "RColorBrewer", "shinycssloaders", "shinyjs",
+                        "stringi", "ggplot2", "reshape2", "svglite")
 
 new_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
 if(length(new_packages)) {
@@ -9,22 +10,6 @@ if(length(new_packages)) {
 invisible(lapply(required_packages, library, character.only = TRUE))
 
 options(shiny.maxRequestSize = 200*1024^2)
-
-# ---------------------------------------------------------------------------
-# IMPORTANT: stylo's own tokenizer (txt.to.words / load.corpus.and.parse)
-# only lower-cases text - it does NOT strip Greek polytonic diacritics
-# (breathing marks, accents, iota subscript, etc.). Our stop-word list below
-# is written in unaccented (monotonic-equivalent) Greek. If we hand accented
-# source texts straight to stylo() and pass this list as `stop.words`, the
-# literal string match inside delete.stop.words() fails silently for almost
-# every accented token (e.g. "καὶ" != "και"), so the stop words barely get
-# removed and MFW slots get polluted with inflected stop-word variants -
-# this was the cause of the weaker/muddier heatmap.
-#
-# Fix: normalize (accent-fold) the corpus files ourselves BEFORE stylo ever
-# reads them, so its own tokenizer only ever sees monotonic-equivalent Greek
-# that matches this stop-word list exactly.
-# ---------------------------------------------------------------------------
 
 greek_accent_map <- c(
   "\u03ac"="\u03b1","\u03ad"="\u03b5","\u03ae"="\u03b7","\u03af"="\u03b9","\u03cc"="\u03bf","\u03cd"="\u03c5","\u03ce"="\u03c9",
@@ -47,16 +32,17 @@ greek_accent_map <- c(
   "\u1ff2"="\u03c9","\u1ff3"="\u03c9","\u1ff4"="\u03c9","\u1ff7"="\u03c9",
   "\u1fe4"="\u03c1","\u1fe5"="\u03c1"
 )
+.greek_old_chars <- paste(names(greek_accent_map), collapse = "")
+.greek_new_chars <- paste(unname(greek_accent_map), collapse = "")
 
 strip_greek_accents <- function(text_vec) {
-  for (i in seq_along(greek_accent_map)) {
-    text_vec <- chartr(names(greek_accent_map)[i], greek_accent_map[i], text_vec)
-  }
-  text_vec
+  stringi::stri_trans_char(text_vec, .greek_old_chars, .greek_new_chars)
 }
 
-# Custom Greek stop-word list (unaccented / monotonic-equivalent forms only -
-# this now matches the corpus AFTER our normalization step above)
+greek_tolower <- function(text_vec) {
+  stringi::stri_trans_tolower(text_vec, locale = "el")
+}
+
 greek_stopwords <- c(
   "και", "δε", "του", "το", "την", "των", "ο", "εν", "τον", "η", 
   "γαρ", "της", "τα", "τω", "μεν", "ου", "αυτου", "επι", "μη", "τη", 
@@ -98,7 +84,7 @@ ui <- fluidPage(
       }
       .container-fluid {
         width: 100% !important;
-        max-width: 900px !important;
+        max-width: 1100px !important;
         margin: 0 auto !important;
         padding: 20px !important;
       }
@@ -142,6 +128,30 @@ ui <- fluidPage(
       .action-buttons { display: flex; gap: 15px; margin-top: 20px; }
       .action-buttons button { flex: 1; }
       .advanced-toggle { color: #667eea; cursor: pointer; text-decoration: underline; font-size: 14px; text-align: center; margin-top: 10px; }
+      .log-console {
+        background: #1e1e1e;
+        color: #33ff33;
+        font-family: 'Consolas', 'Menlo', monospace;
+        font-size: 13px;
+        padding: 15px;
+        border-radius: 10px;
+        height: 260px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        margin-top: 20px;
+      }
+      .log-console .log-warn { color: #ffcc00; }
+      .log-console .log-error { color: #ff5555; }
+      .preview-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        background: #ffffff;
+        padding: 10px;
+        overflow: auto;
+        max-height: 750px;
+      }
     "))
   ),
   
@@ -187,13 +197,25 @@ ui <- fluidPage(
       div(class = "info-text", "Gradient between two contrasting colors")
     ),
     
+    div(class = "param-box",
+      sliderInput("cell_size", "Cell Size (px, matrix stays square):",
+                  min = 8, max = 40, value = 16, step = 1),
+      div(class = "info-text", "Controls how big each matrix cell is (affects the exported file size, not just the preview)"),
+      sliderInput("label_size", "Filename Label Size:",
+                  min = 6, max = 16, value = 9, step = 1),
+      div(class = "info-text", "Font size for the filenames on both axes")
+    ),
+    
     div(class = "action-buttons",
       actionButton("analyze", "Run Analysis (stylo default)", class = "btn-analyze"),
       actionButton("reset", "Clear / Reset", class = "btn-reset")
     ),
     
     div(class = "advanced-toggle", onclick = "Shiny.setInputValue('show_advanced', true, {priority: 'event'})",
-        "Show advanced options (MFW count, stop words) \u25be")
+        "Show advanced options (MFW count, stop words) \u25be"),
+    
+    h3("Live Log", style = "margin-top:30px; font-size:18px;"),
+    div(id = "log_console", class = "log-console")
   ),
   
   uiOutput("advanced_ui"),
@@ -206,6 +228,13 @@ server <- function(input, output, session) {
   advanced_shown  <- reactiveVal(FALSE)
   corpus_dir      <- reactiveVal(NULL)
   
+  log_msg <- function(msg, level = "info") {
+    ts <- format(Sys.time(), "%H:%M:%S")
+    session$sendCustomMessage("appendLog", list(text = paste0("[", ts, "] ", msg), level = level))
+    cat(sprintf("[%s] %s\n", ts, msg))
+    flush.console()
+  }
+  
   observeEvent(input$show_advanced, { advanced_shown(TRUE) })
   
   observeEvent(input$reset, {
@@ -215,6 +244,7 @@ server <- function(input, output, session) {
     old_dir <- isolate(corpus_dir())
     if (!is.null(old_dir) && dir.exists(old_dir)) unlink(old_dir, recursive = TRUE)
     corpus_dir(NULL)
+    session$sendCustomMessage("clearLog", list())
   })
   
   observeEvent(input$files, {
@@ -222,70 +252,93 @@ server <- function(input, output, session) {
     advanced_shown(FALSE)
   })
   
-  # ---- Core routine: normalizes files, writes them to a real corpus/ dir,
-  # and calls the actual stylo() pipeline (gui = FALSE, batch mode) ---------
   run_stylo <- function(mfw_value, use_stopwords, distance_key) {
     
     withProgress(message = 'Running stylo()...', value = 0, {
       
-      incProgress(0.1, detail = "Normalizing & preparing corpus directory...")
+      log_msg(sprintf("Starting run: %d files, MFW=%d, stopwords=%s, method=%s",
+                       nrow(input$files), mfw_value, use_stopwords, distance_key))
+      incProgress(0.05, detail = "Reading uploaded files...")
       
-      work_dir <- file.path(tempdir(), paste0("stylo_run_", as.integer(Sys.time())))
+      work_dir <- file.path(tempdir(), basename(tempfile(pattern = "stylo_run_")))
       dir.create(work_dir, recursive = TRUE, showWarnings = FALSE)
       cdir <- file.path(work_dir, "corpus")
       dir.create(cdir, showWarnings = FALSE)
       
-      # Accent-fold + lowercase every file BEFORE stylo tokenizes it, so that
-      # stylo's own tokenizer (which only lowercases, never strips Greek
-      # diacritics) and our unaccented stop-word list agree on the same
-      # surface forms. Without this, stop-word removal silently fails on
-      # every accented token.
-      for (i in seq_len(nrow(input$files))) {
-        raw <- readLines(input$files$datapath[i], encoding = "UTF-8", warn = FALSE)
-        raw <- paste(raw, collapse = "\n")
-        raw <- tolower(raw)
-        raw <- strip_greek_accents(raw)
-        writeLines(raw, file.path(cdir, input$files$name[i]), useBytes = TRUE)
+      t_step <- Sys.time()
+      raw_texts <- vapply(
+        input$files$datapath,
+        function(p) paste(readLines(p, encoding = "UTF-8", warn = FALSE), collapse = "\n"),
+        character(1)
+      )
+      log_msg(sprintf("Read %d files in %.2f sec (total %s chars)",
+                       length(raw_texts), as.numeric(Sys.time() - t_step, units = "secs"),
+                       format(sum(nchar(raw_texts)), big.mark = ",")))
+      
+      incProgress(0.15, detail = "Lowercasing (stringi, ICU)...")
+      t_step <- Sys.time()
+      raw_texts <- greek_tolower(raw_texts)
+      log_msg(sprintf("Lowercased in %.2f sec", as.numeric(Sys.time() - t_step, units = "secs")))
+      
+      incProgress(0.25, detail = "Stripping Greek accents (stringi, ICU)...")
+      t_step <- Sys.time()
+      raw_texts <- strip_greek_accents(raw_texts)
+      log_msg(sprintf("Accent-stripped in %.2f sec", as.numeric(Sys.time() - t_step, units = "secs")))
+      
+      incProgress(0.3, detail = "Writing normalized corpus to disk...")
+      t_step <- Sys.time()
+      for (i in seq_along(raw_texts)) {
+        writeLines(raw_texts[i], file.path(cdir, input$files$name[i]), useBytes = TRUE)
       }
+      log_msg(sprintf("Wrote %d files in %.2f sec", length(raw_texts),
+                       as.numeric(Sys.time() - t_step, units = "secs")))
       
       old_dir <- corpus_dir()
       if (!is.null(old_dir) && dir.exists(old_dir)) unlink(old_dir, recursive = TRUE)
       corpus_dir(work_dir)
       
-      incProgress(0.35, detail = "Running native stylo pipeline...")
+      incProgress(0.4, detail = "Running native stylo pipeline...")
+      log_msg("Calling stylo() now...")
       
       old_wd <- getwd()
       setwd(work_dir)
       on.exit(setwd(old_wd), add = TRUE)
       
-      # stop.words is now guaranteed to match, since both the corpus and this
-      # list are unaccented, lowercase Greek.
       stopword_vec <- if (use_stopwords) greek_stopwords else NULL
       
-      result <- stylo(
-        gui = FALSE,
-        corpus.dir = "corpus",
-        corpus.lang = "Other",
-        analysis.type = "CA",
-        mfw.min = mfw_value,
-        mfw.max = mfw_value,
-        mfw.incr = 100,
-        culling.min = 0,
-        culling.max = 0,
-        distance.measure = stylo_distance_map[[distance_key]],
-        stop.words = stopword_vec,
-        display.on.screen = FALSE,
-        write.pdf.file = FALSE,
-        write.png.file = FALSE,
-        write.jpg.file = FALSE,
-        write.svg.file = FALSE,
-        save.distance.tables = TRUE
-      )
+      t_step <- Sys.time()
+      result <- tryCatch({
+        stylo(
+          gui = FALSE,
+          corpus.dir = "corpus",
+          corpus.lang = "Other",
+          analysis.type = "CA",
+          mfw.min = mfw_value,
+          mfw.max = mfw_value,
+          mfw.incr = 100,
+          culling.min = 0,
+          culling.max = 0,
+          distance.measure = stylo_distance_map[[distance_key]],
+          stop.words = stopword_vec,
+          display.on.screen = FALSE,
+          write.pdf.file = FALSE,
+          write.png.file = FALSE,
+          write.jpg.file = FALSE,
+          write.svg.file = FALSE,
+          save.distance.tables = TRUE
+        )
+      }, error = function(e) {
+        log_msg(paste("stylo() ERROR:", conditionMessage(e)), level = "error")
+        showNotification(paste("Stylo Engine Error:", conditionMessage(e)), type = "error", duration = 10)
+        stop(e)
+      })
+      log_msg(sprintf("stylo() finished in %.2f sec", as.numeric(Sys.time() - t_step, units = "secs")))
       
       incProgress(0.85, detail = "Reading stylo's distance table CSV...")
       
       csv_candidates <- list.files(work_dir, pattern = "^distance_table.*\\.csv$",
                                     full.names = TRUE, recursive = TRUE)
+      log_msg(sprintf("Found %d distance_table CSV candidate(s)", length(csv_candidates)))
       
       if (length(csv_candidates) > 0) {
         dist_df <- read.csv(csv_candidates[1], row.names = 1, check.names = FALSE)
@@ -294,15 +347,21 @@ server <- function(input, output, session) {
         dist_matrix <- as.matrix(result$distance.table)
       }
       
-      rn <- gsub("(\\.txt$)", "", rownames(dist_matrix))
-      cn <- gsub("(\\.txt$)", "", colnames(dist_matrix))
-      rownames(dist_matrix) <- rn
-      colnames(dist_matrix) <- cn
+      original_names <- input$files$name
+      names(original_names) <- tools::file_path_sans_ext(input$files$name)
+      
+      match_original <- function(x) {
+        stripped <- tools::file_path_sans_ext(x)
+        ifelse(stripped %in% names(original_names), original_names[stripped], x)
+      }
+      rownames(dist_matrix) <- match_original(rownames(dist_matrix))
+      colnames(dist_matrix) <- match_original(colnames(dist_matrix))
       
       sorted_names <- sort(rownames(dist_matrix))
       dist_matrix <- dist_matrix[sorted_names, sorted_names]
       
       incProgress(1.0, detail = "Completed!")
+      log_msg("Done - rendering heatmap.")
       
       list(
         dist_matrix = dist_matrix,
@@ -368,6 +427,23 @@ server <- function(input, output, session) {
     ))
   })
   
+  full_dims <- reactive({
+    req(analysis_data())
+    data <- analysis_data()
+    n <- nrow(data$dist_matrix)
+    max_name_len <- max(nchar(rownames(data$dist_matrix)))
+    cell_px <- input$cell_size
+    label_px <- input$label_size
+    
+    matrix_side <- n * cell_px
+    label_margin <- max_name_len * label_px * 0.62 + 60
+    
+    list(
+      width  = matrix_side + label_margin + 40,
+      height = matrix_side + label_margin + 40
+    )
+  })
+  
   output$results_ui <- renderUI({
     req(analysis_data())
     data <- analysis_data()
@@ -378,8 +454,11 @@ server <- function(input, output, session) {
           paste0("MFW = ", data$mfw, " | Stop words removed: ",
                  ifelse(data$stopwords_used, "Yes", "No"),
                  " | Method: ", distance_labels[[data$method]])),
-      withSpinner(plotOutput("heatmap_plot", width = "100%", height = "600px"), 
-                  type = 4, color = "#667eea"),
+      div(class = "preview-container",
+        imageOutput("heatmap_plot", width = "100%", height = "auto")
+      ),
+      div(class = "info-text", style = "text-align:center; margin-top:8px;",
+          "Preview is scaled for visibility. Downloaded files retain full resolution and size settings."),
       hr(),
       downloadButton("download_matrix", "Download Matrix (CSV)", style = "margin: 10px 5px;"),
       downloadButton("download_plot", "Download Heatmap (PNG, 300 DPI)", style = "margin: 10px 5px;"),
@@ -387,29 +466,64 @@ server <- function(input, output, session) {
     )
   })
   
-  make_palette <- function(scheme) {
+  make_palette_fn <- function(scheme) {
     switch(scheme,
-      "purple_yellow" = colorRampPalette(c("#9B59B6", "#F39C12"))(100),
-      "blue_red" = colorRampPalette(c("#3498DB", "#E74C3C"))(100),
-      "green_orange" = colorRampPalette(c("#27AE60", "#E67E22"))(100),
-      "cyan_pink" = colorRampPalette(c("#16A085", "#E91E63"))(100)
+      "purple_yellow" = colorRampPalette(c("#9B59B6", "#F39C12")),
+      "blue_red" = colorRampPalette(c("#3498DB", "#E74C3C")),
+      "green_orange" = colorRampPalette(c("#27AE60", "#E67E22")),
+      "cyan_pink" = colorRampPalette(c("#16A085", "#E91E63"))
     )
   }
   
-  draw_heatmap <- function(dist_mat, scheme, method_key) {
-    heatmap(dist_mat,
-            col = make_palette(scheme),
-            scale = "none", Rowv = NA, Colv = NA,
-            margins = c(12, 12), cexRow = 0.65, cexCol = 0.65,
-            main = paste("Heatmap - Stylometric Distances\nMethod:", distance_labels[[method_key]]),
-            xlab = "", ylab = "", symm = TRUE, revC = FALSE)
+  # ---- Back to plain linear color mapping (previous version) - only the
+  # axis-label alignment fix is kept: axis.ticks.length.y = 0 and tight
+  # margins pull the row names flush against the left edge of the matrix. --
+  draw_heatmap <- function(dist_mat, scheme, method_key, label_pt) {
+    nm <- rownames(dist_mat)
+    df <- reshape2::melt(dist_mat, varnames = c("Row", "Col"), value.name = "Distance")
+    df$Row <- factor(df$Row, levels = nm)
+    df$Col <- factor(df$Col, levels = nm)
+    
+    pal_fn <- make_palette_fn(scheme)
+    
+    ggplot(df, aes(x = Col, y = Row, fill = Distance)) +
+      geom_tile(color = NA) +
+      scale_fill_gradientn(colors = pal_fn(100)) +
+      coord_fixed() +
+      labs(title = paste("Heatmap - Stylometric Distances | Method:", distance_labels[[method_key]]),
+           x = NULL, y = NULL, fill = "Distance") +
+      theme_minimal(base_size = label_pt + 2) +
+      theme(
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = label_pt),
+        axis.text.y = element_text(size = label_pt, hjust = 1, margin = margin(r = 2)),
+        axis.ticks.length.y = unit(0, "pt"),
+        axis.ticks.length.x = unit(0, "pt"),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.margin = margin(t = 10, r = 10, b = 5, l = 5),
+        panel.grid = element_blank()
+      ) +
+      scale_y_discrete(position = "left", expand = c(0, 0)) +
+      scale_x_discrete(position = "bottom", expand = c(0, 0))
   }
   
-  output$heatmap_plot <- renderPlot({
+  output$heatmap_plot <- renderImage({
     req(analysis_data())
     data <- analysis_data()
-    draw_heatmap(data$dist_matrix, data$color_scheme, data$method)
-  })
+    dims <- full_dims()
+    
+    outfile <- tempfile(fileext = ".svg")
+    p <- draw_heatmap(data$dist_matrix, data$color_scheme, data$method, input$label_size)
+    
+    ggsave(outfile, plot = p,
+           width = max(dims$width / 96, 4), height = max(dims$height / 96, 4),
+           units = "in", device = "svg", limitsize = FALSE, bg = "white")
+    
+    list(src = outfile,
+         contentType = "image/svg+xml",
+         width = "100%",
+         style = "max-width: 100%; height: auto; max-height: 730px; object-fit: contain; display: block; margin: 0 auto;",
+         alt = "Heatmap Preview")
+  }, deleteFile = TRUE)
   
   output$download_matrix <- downloadHandler(
     filename = function() paste0("distance_matrix_", Sys.Date(), ".csv"),
@@ -422,20 +536,34 @@ server <- function(input, output, session) {
   output$download_plot <- downloadHandler(
     filename = function() paste0("heatmap_", Sys.Date(), ".png"),
     content = function(file) {
-      data <- analysis_data()
-      png(file, width = 3200, height = 3200, res = 300)
-      draw_heatmap(data$dist_matrix, data$color_scheme, data$method)
-      dev.off()
+      tryCatch({
+        data <- analysis_data()
+        dims <- full_dims()
+        p <- draw_heatmap(data$dist_matrix, data$color_scheme, data$method, input$label_size)
+        ggsave(file, plot = p,
+               width = max(dims$width / 96, 4), height = max(dims$height / 96, 4),
+               dpi = 300, units = "in", limitsize = FALSE, bg = "white")
+      }, error = function(e) {
+        showNotification(paste("PNG export failed:", conditionMessage(e)), type = "error", duration = 10)
+        stop(e)
+      })
     }
   )
   
   output$download_svg <- downloadHandler(
     filename = function() paste0("heatmap_", Sys.Date(), ".svg"),
     content = function(file) {
-      data <- analysis_data()
-      svg(file, width = 11, height = 11)
-      draw_heatmap(data$dist_matrix, data$color_scheme, data$method)
-      dev.off()
+      tryCatch({
+        data <- analysis_data()
+        dims <- full_dims()
+        p <- draw_heatmap(data$dist_matrix, data$color_scheme, data$method, input$label_size)
+        ggsave(file, plot = p,
+               width = max(dims$width / 96, 4), height = max(dims$height / 96, 4),
+               units = "in", device = "svg", limitsize = FALSE, bg = "white")
+      }, error = function(e) {
+        showNotification(paste("SVG export failed:", conditionMessage(e)), type = "error", duration = 10)
+        stop(e)
+      })
     }
   )
   
@@ -444,5 +572,25 @@ server <- function(input, output, session) {
     if (!is.null(d) && dir.exists(d)) unlink(d, recursive = TRUE)
   })
 }
+
+ui <- tagList(
+  tags$head(tags$script(HTML("
+    Shiny.addCustomMessageHandler('appendLog', function(msg) {
+      var el = document.getElementById('log_console');
+      if (!el) return;
+      var line = document.createElement('div');
+      if (msg.level === 'error') line.className = 'log-error';
+      if (msg.level === 'warn') line.className = 'log-warn';
+      line.textContent = msg.text;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    });
+    Shiny.addCustomMessageHandler('clearLog', function(msg) {
+      var el = document.getElementById('log_console');
+      if (el) el.innerHTML = '';
+    });
+  "))),
+  ui
+)
 
 shinyApp(ui = ui, server = server)

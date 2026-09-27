@@ -1,38 +1,62 @@
-library(shiny)
-library(stylo)
-library(RColorBrewer)
+# Define required packages
+required_packages <- c("shiny", "stylo", "RColorBrewer", "shinycssloaders", "shinyjs")
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) {
+  install.packages(new_packages, dependencies = TRUE)
+}
+
+invisible(lapply(required_packages, library, character.only = TRUE))
 
 options(shiny.maxRequestSize = 200*1024^2)
 
-remove_greek_accents <- function(text) {
-  accents <- c(
-    "ά" = "α", "έ" = "ε", "ή" = "η", "ί" = "ι", "ό" = "ο", "ύ" = "υ", "ώ" = "ω",
-    "ὰ" = "α", "ὲ" = "ε", "ὴ" = "η", "ὶ" = "ι", "ὸ" = "ο", "ὺ" = "υ", "ὼ" = "ω",
-    "ᾶ" = "α", "ῆ" = "η", "ῖ" = "ι", "ῦ" = "υ", "ῶ" = "ω",
-    "ἀ" = "α", "ἁ" = "α", "ἂ" = "α", "ἃ" = "α", "ἄ" = "α", "ἅ" = "α", "ἆ" = "α", "ἇ" = "α",
-    "ᾀ" = "α", "ᾁ" = "α", "ᾂ" = "α", "ᾃ" = "α", "ᾄ" = "α", "ᾅ" = "α", "ᾆ" = "α", "ᾇ" = "α",
-    "ᾰ" = "α", "ᾱ" = "α", "ᾲ" = "α", "ᾳ" = "α", "ᾴ" = "α", "ᾷ" = "α",
-    "ἐ" = "ε", "ἑ" = "ε", "ἒ" = "ε", "ἓ" = "ε", "ἔ" = "ε", "ἕ" = "ε",
-    "ἠ" = "η", "ἡ" = "η", "ἢ" = "η", "ἣ" = "η", "ἤ" = "η", "ἥ" = "η", "ἦ" = "η", "ἧ" = "η",
-    "ᾐ" = "η", "ᾑ" = "η", "ᾒ" = "η", "ᾓ" = "η", "ᾔ" = "η", "ᾕ" = "η", "ᾖ" = "η", "ᾗ" = "η",
-    "ῂ" = "η", "ῃ" = "η", "ῄ" = "η", "ῇ" = "η",
-    "ἰ" = "ι", "ἱ" = "ι", "ἲ" = "ι", "ἳ" = "ι", "ἴ" = "ι", "ἵ" = "ι", "ἶ" = "ι", "ἷ" = "ι",
-    "ῐ" = "ι", "ῑ" = "ι", "ῒ" = "ι", "ΐ" = "ι", "ῖ" = "ι", "ῗ" = "ι",
-    "ὀ" = "ο", "ὁ" = "ο", "ὂ" = "ο", "ὃ" = "ο", "ὄ" = "ο", "ὅ" = "ο",
-    "ὐ" = "υ", "ὑ" = "υ", "ὒ" = "υ", "ὓ" = "υ", "ὔ" = "υ", "ὕ" = "υ", "ὖ" = "υ", "ὗ" = "υ",
-    "ῠ" = "υ", "ῡ" = "υ", "ῢ" = "υ", "ΰ" = "υ", "ῦ" = "υ", "ῧ" = "υ",
-    "ὠ" = "ω", "ὡ" = "ω", "ὢ" = "ω", "ὣ" = "ω", "ὤ" = "ω", "ὥ" = "ω", "ὦ" = "ω", "ὧ" = "ω",
-    "ᾠ" = "ω", "ᾡ" = "ω", "ᾢ" = "ω", "ᾣ" = "ω", "ᾤ" = "ω", "ᾥ" = "ω", "ᾦ" = "ω", "ᾧ" = "ω",
-    "ῲ" = "ω", "ῳ" = "ω", "ῴ" = "ω", "ῷ" = "ω",
-    "ῤ" = "ρ", "ῥ" = "ρ"
-  )
-  
-  for(i in seq_along(accents)) {
-    text <- gsub(names(accents)[i], accents[i], text, fixed = TRUE)
+# ---------------------------------------------------------------------------
+# IMPORTANT: stylo's own tokenizer (txt.to.words / load.corpus.and.parse)
+# only lower-cases text - it does NOT strip Greek polytonic diacritics
+# (breathing marks, accents, iota subscript, etc.). Our stop-word list below
+# is written in unaccented (monotonic-equivalent) Greek. If we hand accented
+# source texts straight to stylo() and pass this list as `stop.words`, the
+# literal string match inside delete.stop.words() fails silently for almost
+# every accented token (e.g. "καὶ" != "και"), so the stop words barely get
+# removed and MFW slots get polluted with inflected stop-word variants -
+# this was the cause of the weaker/muddier heatmap.
+#
+# Fix: normalize (accent-fold) the corpus files ourselves BEFORE stylo ever
+# reads them, so its own tokenizer only ever sees monotonic-equivalent Greek
+# that matches this stop-word list exactly.
+# ---------------------------------------------------------------------------
+
+greek_accent_map <- c(
+  "\u03ac"="\u03b1","\u03ad"="\u03b5","\u03ae"="\u03b7","\u03af"="\u03b9","\u03cc"="\u03bf","\u03cd"="\u03c5","\u03ce"="\u03c9",
+  "\u1f70"="\u03b1","\u1f72"="\u03b5","\u1f74"="\u03b7","\u1f76"="\u03b9","\u1f78"="\u03bf","\u1f7a"="\u03c5","\u1f7c"="\u03c9",
+  "\u1fb6"="\u03b1","\u1fc6"="\u03b7","\u1fd6"="\u03b9","\u1fe6"="\u03c5","\u1ff6"="\u03c9",
+  "\u1f00"="\u03b1","\u1f01"="\u03b1","\u1f02"="\u03b1","\u1f03"="\u03b1","\u1f04"="\u03b1","\u1f05"="\u03b1","\u1f06"="\u03b1","\u1f07"="\u03b1",
+  "\u1f80"="\u03b1","\u1f81"="\u03b1","\u1f82"="\u03b1","\u1f83"="\u03b1","\u1f84"="\u03b1","\u1f85"="\u03b1","\u1f86"="\u03b1","\u1f87"="\u03b1",
+  "\u1fb0"="\u03b1","\u1fb1"="\u03b1","\u1fb2"="\u03b1","\u1fb3"="\u03b1","\u1fb4"="\u03b1","\u1fb7"="\u03b1",
+  "\u1f10"="\u03b5","\u1f11"="\u03b5","\u1f12"="\u03b5","\u1f13"="\u03b5","\u1f14"="\u03b5","\u1f15"="\u03b5",
+  "\u1f20"="\u03b7","\u1f21"="\u03b7","\u1f22"="\u03b7","\u1f23"="\u03b7","\u1f24"="\u03b7","\u1f25"="\u03b7","\u1f26"="\u03b7","\u1f27"="\u03b7",
+  "\u1f90"="\u03b7","\u1f91"="\u03b7","\u1f92"="\u03b7","\u1f93"="\u03b7","\u1f94"="\u03b7","\u1f95"="\u03b7","\u1f96"="\u03b7","\u1f97"="\u03b7",
+  "\u1fc2"="\u03b7","\u1fc3"="\u03b7","\u1fc4"="\u03b7","\u1fc7"="\u03b7",
+  "\u1f30"="\u03b9","\u1f31"="\u03b9","\u1f32"="\u03b9","\u1f33"="\u03b9","\u1f34"="\u03b9","\u1f35"="\u03b9","\u1f36"="\u03b9","\u1f37"="\u03b9",
+  "\u1fd0"="\u03b9","\u1fd1"="\u03b9","\u1fd2"="\u03b9","\u0390"="\u03b9","\u1fd7"="\u03b9",
+  "\u1f40"="\u03bf","\u1f41"="\u03bf","\u1f42"="\u03bf","\u1f43"="\u03bf","\u1f44"="\u03bf","\u1f45"="\u03bf",
+  "\u1f50"="\u03c5","\u1f51"="\u03c5","\u1f52"="\u03c5","\u1f53"="\u03c5","\u1f54"="\u03c5","\u1f55"="\u03c5","\u1f56"="\u03c5","\u1f57"="\u03c5",
+  "\u1fe0"="\u03c5","\u1fe1"="\u03c5","\u1fe2"="\u03c5","\u03b0"="\u03c5","\u1fe7"="\u03c5",
+  "\u1f60"="\u03c9","\u1f61"="\u03c9","\u1f62"="\u03c9","\u1f63"="\u03c9","\u1f64"="\u03c9","\u1f65"="\u03c9","\u1f66"="\u03c9","\u1f67"="\u03c9",
+  "\u1fa0"="\u03c9","\u1fa1"="\u03c9","\u1fa2"="\u03c9","\u1fa3"="\u03c9","\u1fa4"="\u03c9","\u1fa5"="\u03c9","\u1fa6"="\u03c9","\u1fa7"="\u03c9",
+  "\u1ff2"="\u03c9","\u1ff3"="\u03c9","\u1ff4"="\u03c9","\u1ff7"="\u03c9",
+  "\u1fe4"="\u03c1","\u1fe5"="\u03c1"
+)
+
+strip_greek_accents <- function(text_vec) {
+  for (i in seq_along(greek_accent_map)) {
+    text_vec <- chartr(names(greek_accent_map)[i], greek_accent_map[i], text_vec)
   }
-  return(text)
+  text_vec
 }
 
+# Custom Greek stop-word list (unaccented / monotonic-equivalent forms only -
+# this now matches the corpus AFTER our normalization step above)
 greek_stopwords <- c(
   "και", "δε", "του", "το", "την", "των", "ο", "εν", "τον", "η", 
   "γαρ", "της", "τα", "τω", "μεν", "ου", "αυτου", "επι", "μη", "τη", 
@@ -48,7 +72,23 @@ greek_stopwords <- c(
   "ω", "ετι", "τοινυν"
 )
 
+stylo_distance_map <- c(
+  "delta"     = "delta",
+  "cosine"    = "cosine",
+  "wurzburg"  = "wurzburg",
+  "eder"      = "eder",
+  "manhattan" = "manhattan",
+  "euclidean" = "euclidean",
+  "canberra"  = "canberra"
+)
+distance_labels <- c(
+  "delta" = "Classic Delta (Burrows)", "cosine" = "Cosine Distance",
+  "wurzburg" = "Wurzburg (Cosine Delta)", "eder" = "Eder's Delta",
+  "manhattan" = "Manhattan", "euclidean" = "Euclidean", "canberra" = "Canberra"
+)
+
 ui <- fluidPage(
+  useShinyjs(),
   tags$head(
     tags$style(HTML("
       body {
@@ -61,29 +101,15 @@ ui <- fluidPage(
         max-width: 900px !important;
         margin: 0 auto !important;
         padding: 20px !important;
-        direction: rtl;
       }
-      .control-container {
+      .control-container, .results-container, .advanced-container {
         background: white;
         border-radius: 15px;
         padding: 30px;
         margin: 20px 0;
         box-shadow: 0 10px 40px rgba(0,0,0,0.2);
       }
-      .results-container {
-        background: white;
-        border-radius: 15px;
-        padding: 30px;
-        margin: 20px 0;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-      }
-      h2 {
-        color: #667eea;
-        text-align: center;
-        margin-bottom: 30px;
-        font-weight: 600;
-      }
-      h3 {
+      h2, h3 {
         color: #667eea;
         text-align: center;
         margin-bottom: 20px;
@@ -97,46 +123,44 @@ ui <- fluidPage(
       }
       .btn-analyze {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        padding: 12px 40px;
-        border-radius: 25px;
-        font-size: 16px;
-        font-weight: 600;
-        width: 100%;
-        margin-top: 20px;
-        cursor: pointer;
-        transition: transform 0.2s;
+        color: white; border: none; padding: 12px 40px; border-radius: 25px;
+        font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.2s;
       }
-      .btn-analyze:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+      .btn-analyze:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102,126,234,0.4); color: white; }
+      .btn-reset {
+        background: #f8f9fa; color: #dc3545; border: 2px solid #dc3545;
+        padding: 12px 40px; border-radius: 25px; font-size: 16px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s;
       }
-      .info-text {
-        color: #6c757d;
-        font-size: 13px;
-        margin-top: 5px;
+      .btn-reset:hover { background: #dc3545; color: white; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(220,53,69,0.4); }
+      .btn-refine {
+        background: #28a745; color: white; border: none; padding: 10px 30px;
+        border-radius: 25px; font-size: 15px; font-weight: 600; cursor: pointer;
       }
+      .btn-refine:hover { background: #218838; }
+      .info-text { color: #6c757d; font-size: 13px; margin-top: 5px; }
+      .action-buttons { display: flex; gap: 15px; margin-top: 20px; }
+      .action-buttons button { flex: 1; }
+      .advanced-toggle { color: #667eea; cursor: pointer; text-decoration: underline; font-size: 14px; text-align: center; margin-top: 10px; }
     "))
   ),
   
   div(class = "control-container",
-    h2("ניתוח סטיילומטרי - מטריצת מרחקים"),
+    h2("Stylometric Analysis - Distance Matrix (stylo engine)"),
     
     div(class = "param-box",
       fileInput("files", 
-                "בחר קבצי TXT (לפחות 2 קבצים)",
+                "Select TXT files (at least 2 files)",
                 multiple = TRUE,
                 accept = c(".txt"),
-                buttonLabel = "בחר קבצים...",
-                placeholder = "לא נבחרו קבצים"),
-      div(class = "info-text", 
-          "כל קובץ עם ~100 מילים")
+                buttonLabel = "Browse...",
+                placeholder = "No files selected"),
+      div(class = "info-text", "Each file should contain ~100 words")
     ),
     
     div(class = "param-box",
       selectInput("distance_method",
-                  "בחר מודל מרחק:",
+                  "Select Distance Model:",
                   choices = c(
                     "Classic Delta (Burrows)" = "delta",
                     "Cosine Distance" = "cosine",
@@ -147,198 +171,248 @@ ui <- fluidPage(
                     "Canberra Distance" = "canberra"
                   ),
                   selected = "wurzburg"),
-      div(class = "info-text",
-          "Wurzburg ו-Classic Delta מומלצים לטקסטים עתיקים")
-    ),
-    
-    div(class = "param-box",
-      sliderInput("mfw",
-                  "מספר המילים הנפוצות ביותר:",
-                  min = 10, max = 200, value = 50, step = 10),
-      div(class = "info-text",
-          "ניתוח יתבסס על 50 המילים הנפוצות ביותר בקורפוס")
+      div(class = "info-text", "Wurzburg and Classic Delta are recommended for ancient texts")
     ),
     
     div(class = "param-box",
       selectInput("color_scheme",
-                  "בחר פלטת צבעים:",
+                  "Select Color Palette:",
                   choices = c(
-                    "סגול-צהוב" = "purple_yellow",
-                    "כחול-אדום" = "blue_red",
-                    "ירוק-כתום" = "green_orange",
-                    "תכלת-ורוד" = "cyan_pink"
+                    "Purple-Yellow" = "purple_yellow",
+                    "Blue-Red" = "blue_red",
+                    "Green-Orange" = "green_orange",
+                    "Cyan-Pink" = "cyan_pink"
                   ),
                   selected = "purple_yellow"),
-      div(class = "info-text",
-          "גרדיאנט בין שני צבעים מנוגדים")
+      div(class = "info-text", "Gradient between two contrasting colors")
     ),
     
-    actionButton("analyze", "הרץ ניתוח", class = "btn-analyze")
+    div(class = "action-buttons",
+      actionButton("analyze", "Run Analysis (stylo default)", class = "btn-analyze"),
+      actionButton("reset", "Clear / Reset", class = "btn-reset")
+    ),
+    
+    div(class = "advanced-toggle", onclick = "Shiny.setInputValue('show_advanced', true, {priority: 'event'})",
+        "Show advanced options (MFW count, stop words) \u25be")
   ),
   
+  uiOutput("advanced_ui"),
   uiOutput("results_ui")
 )
 
 server <- function(input, output, session) {
   
-  analysis_data <- reactiveVal(NULL)
+  analysis_data   <- reactiveVal(NULL)
+  advanced_shown  <- reactiveVal(FALSE)
+  corpus_dir      <- reactiveVal(NULL)
   
-  observeEvent(input$analyze, {
-    req(input$files)
+  observeEvent(input$show_advanced, { advanced_shown(TRUE) })
+  
+  observeEvent(input$reset, {
+    reset("files")
+    analysis_data(NULL)
+    advanced_shown(FALSE)
+    old_dir <- isolate(corpus_dir())
+    if (!is.null(old_dir) && dir.exists(old_dir)) unlink(old_dir, recursive = TRUE)
+    corpus_dir(NULL)
+  })
+  
+  observeEvent(input$files, {
+    analysis_data(NULL)
+    advanced_shown(FALSE)
+  })
+  
+  # ---- Core routine: normalizes files, writes them to a real corpus/ dir,
+  # and calls the actual stylo() pipeline (gui = FALSE, batch mode) ---------
+  run_stylo <- function(mfw_value, use_stopwords, distance_key) {
     
-    if(nrow(input$files) < 2) {
-      showNotification("נדרשים לפחות 2 קבצים לניתוח", type = "error")
-      return()
-    }
-    
-    withProgress(message = 'מעבד טקסטים...', value = 0, {
+    withProgress(message = 'Running stylo()...', value = 0, {
       
-      incProgress(0.2, detail = "קורא קבצים...")
+      incProgress(0.1, detail = "Normalizing & preparing corpus directory...")
       
-      texts <- list()
-      file_names <- c()
+      work_dir <- file.path(tempdir(), paste0("stylo_run_", as.integer(Sys.time())))
+      dir.create(work_dir, recursive = TRUE, showWarnings = FALSE)
+      cdir <- file.path(work_dir, "corpus")
+      dir.create(cdir, showWarnings = FALSE)
       
-      for(i in 1:nrow(input$files)) {
-        text <- readLines(input$files$datapath[i], 
-                         encoding = "UTF-8", 
-                         warn = FALSE)
-        text <- paste(text, collapse = " ")
-        
-        text <- remove_greek_accents(text)
-        text <- tolower(text)
-        text <- gsub("[[:punct:]]", " ", text)
-        text <- gsub("[0-9]", " ", text)
-        
-        words <- unlist(strsplit(text, "\\s+"))
-        words <- words[words != ""]
-        words <- words[!words %in% greek_stopwords]
-        
-        texts[[i]] <- paste(words, collapse = " ")
-        file_names[i] <- input$files$name[i]
+      # Accent-fold + lowercase every file BEFORE stylo tokenizes it, so that
+      # stylo's own tokenizer (which only lowercases, never strips Greek
+      # diacritics) and our unaccented stop-word list agree on the same
+      # surface forms. Without this, stop-word removal silently fails on
+      # every accented token.
+      for (i in seq_len(nrow(input$files))) {
+        raw <- readLines(input$files$datapath[i], encoding = "UTF-8", warn = FALSE)
+        raw <- paste(raw, collapse = "\n")
+        raw <- tolower(raw)
+        raw <- strip_greek_accents(raw)
+        writeLines(raw, file.path(cdir, input$files$name[i]), useBytes = TRUE)
       }
       
-      incProgress(0.3, detail = "מחשב תדירויות...")
+      old_dir <- corpus_dir()
+      if (!is.null(old_dir) && dir.exists(old_dir)) unlink(old_dir, recursive = TRUE)
+      corpus_dir(work_dir)
       
-      corpus_text <- paste(texts, collapse = " ")
-      all_words <- unlist(strsplit(corpus_text, "\\s+"))
-      word_freq <- sort(table(all_words), decreasing = TRUE)
-      top_words <- names(word_freq)[1:min(input$mfw, length(word_freq))]
+      incProgress(0.35, detail = "Running native stylo pipeline...")
       
-      freq_matrix <- matrix(0, nrow = length(texts), ncol = length(top_words))
-      rownames(freq_matrix) <- file_names
-      colnames(freq_matrix) <- top_words
+      old_wd <- getwd()
+      setwd(work_dir)
+      on.exit(setwd(old_wd), add = TRUE)
       
-      for(i in 1:length(texts)) {
-        words <- unlist(strsplit(texts[[i]], "\\s+"))
-        for(j in 1:length(top_words)) {
-          freq_matrix[i, j] <- sum(words == top_words[j]) / length(words)
-        }
-      }
+      # stop.words is now guaranteed to match, since both the corpus and this
+      # list are unaccented, lowercase Greek.
+      stopword_vec <- if (use_stopwords) greek_stopwords else NULL
       
-      incProgress(0.5, detail = "מחשב מרחקים...")
-      
-      dist_matrix <- switch(input$distance_method,
-        "delta" = {
-          z_scores <- scale(freq_matrix)
-          as.matrix(dist(z_scores, method = "manhattan"))
-        },
-        "cosine" = {
-          cos_sim <- freq_matrix %*% t(freq_matrix) / 
-                    (sqrt(rowSums(freq_matrix^2)) %o% sqrt(rowSums(freq_matrix^2)))
-          as.matrix(1 - cos_sim)
-        },
-        "wurzburg" = {
-          z_scores <- scale(freq_matrix)
-          cos_sim <- z_scores %*% t(z_scores) / 
-                    (sqrt(rowSums(z_scores^2)) %o% sqrt(rowSums(z_scores^2)))
-          as.matrix(1 - cos_sim)
-        },
-        "eder" = {
-          sqrt_freq <- sqrt(freq_matrix)
-          as.matrix(dist(sqrt_freq, method = "manhattan"))
-        },
-        "manhattan" = {
-          as.matrix(dist(freq_matrix, method = "manhattan"))
-        },
-        "euclidean" = {
-          as.matrix(dist(freq_matrix, method = "euclidean"))
-        },
-        "canberra" = {
-          as.matrix(dist(freq_matrix, method = "canberra"))
-        }
+      result <- stylo(
+        gui = FALSE,
+        corpus.dir = "corpus",
+        corpus.lang = "Other",
+        analysis.type = "CA",
+        mfw.min = mfw_value,
+        mfw.max = mfw_value,
+        mfw.incr = 100,
+        culling.min = 0,
+        culling.max = 0,
+        distance.measure = stylo_distance_map[[distance_key]],
+        stop.words = stopword_vec,
+        display.on.screen = FALSE,
+        write.pdf.file = FALSE,
+        write.png.file = FALSE,
+        write.jpg.file = FALSE,
+        write.svg.file = FALSE,
+        save.distance.tables = TRUE
       )
+      
+      incProgress(0.85, detail = "Reading stylo's distance table CSV...")
+      
+      csv_candidates <- list.files(work_dir, pattern = "^distance_table.*\\.csv$",
+                                    full.names = TRUE, recursive = TRUE)
+      
+      if (length(csv_candidates) > 0) {
+        dist_df <- read.csv(csv_candidates[1], row.names = 1, check.names = FALSE)
+        dist_matrix <- as.matrix(dist_df)
+      } else {
+        dist_matrix <- as.matrix(result$distance.table)
+      }
+      
+      rn <- gsub("(\\.txt$)", "", rownames(dist_matrix))
+      cn <- gsub("(\\.txt$)", "", colnames(dist_matrix))
+      rownames(dist_matrix) <- rn
+      colnames(dist_matrix) <- cn
       
       sorted_names <- sort(rownames(dist_matrix))
       dist_matrix <- dist_matrix[sorted_names, sorted_names]
       
-      incProgress(0.8, detail = "יוצר ויזואליזציה...")
+      incProgress(1.0, detail = "Completed!")
       
-      analysis_data(list(
+      list(
         dist_matrix = dist_matrix,
-        file_names = sorted_names,
-        method = input$distance_method,
-        color_scheme = input$color_scheme,
-        top_words = top_words,
-        freq_matrix = freq_matrix
-      ))
-      
-      incProgress(1.0, detail = "הושלם!")
+        file_names  = sorted_names,
+        mfw         = mfw_value,
+        stopwords_used = use_stopwords
+      )
     })
+  }
+  
+  observeEvent(input$analyze, {
+    req(input$files)
+    if (nrow(input$files) < 2) {
+      showNotification("At least 2 files are required for analysis", type = "error")
+      return()
+    }
+    
+    res <- run_stylo(mfw_value = 100, use_stopwords = FALSE,
+                      distance_key = input$distance_method)
+    
+    analysis_data(list(
+      dist_matrix = res$dist_matrix,
+      file_names  = res$file_names,
+      method      = input$distance_method,
+      color_scheme = input$color_scheme,
+      mfw = res$mfw,
+      stopwords_used = res$stopwords_used
+    ))
+  })
+  
+  output$advanced_ui <- renderUI({
+    req(advanced_shown())
+    div(class = "advanced-container",
+      h3("Advanced Options"),
+      div(class = "param-box",
+        sliderInput("mfw_adv",
+                    "Number of Most Frequent Words (MFW):",
+                    min = 10, max = 200, value = 100, step = 10),
+        div(class = "info-text", "Re-runs stylo() with this MFW cutoff")
+      ),
+      div(class = "param-box",
+        checkboxInput("use_stopwords_adv", "Remove Greek stop words", value = TRUE),
+        div(class = "info-text", "Corpus is accent-folded first, so the (unaccented) stop-word list matches correctly")
+      ),
+      actionButton("refine", "Re-run stylo() with these settings", class = "btn-refine")
+    )
+  })
+  
+  observeEvent(input$refine, {
+    req(input$files, analysis_data())
+    
+    res <- run_stylo(mfw_value = input$mfw_adv,
+                      use_stopwords = input$use_stopwords_adv,
+                      distance_key = input$distance_method)
+    
+    analysis_data(list(
+      dist_matrix = res$dist_matrix,
+      file_names  = res$file_names,
+      method      = input$distance_method,
+      color_scheme = input$color_scheme,
+      mfw = res$mfw,
+      stopwords_used = res$stopwords_used
+    ))
   })
   
   output$results_ui <- renderUI({
     req(analysis_data())
+    data <- analysis_data()
     
     div(class = "results-container",
-      h3("תוצאות הניתוח"),
-      plotOutput("heatmap_plot", width = "100%", height = "600px"),
+      h3("Analysis Results"),
+      div(class = "info-text", style = "text-align:center;",
+          paste0("MFW = ", data$mfw, " | Stop words removed: ",
+                 ifelse(data$stopwords_used, "Yes", "No"),
+                 " | Method: ", distance_labels[[data$method]])),
+      withSpinner(plotOutput("heatmap_plot", width = "100%", height = "600px"), 
+                  type = 4, color = "#667eea"),
       hr(),
-      downloadButton("download_matrix", "הורד מטריצה (CSV)", 
-                    style = "margin: 10px 5px;"),
-      downloadButton("download_plot", "הורד מפת חום (PNG)",
-                    style = "margin: 10px 5px;")
+      downloadButton("download_matrix", "Download Matrix (CSV)", style = "margin: 10px 5px;"),
+      downloadButton("download_plot", "Download Heatmap (PNG, 300 DPI)", style = "margin: 10px 5px;"),
+      downloadButton("download_svg", "Download Heatmap (SVG)", style = "margin: 10px 5px;")
     )
   })
   
-  output$heatmap_plot <- renderPlot({
-    req(analysis_data())
-    
-    data <- analysis_data()
-    dist_mat <- data$dist_matrix
-    
-    color_palette <- switch(data$color_scheme,
+  make_palette <- function(scheme) {
+    switch(scheme,
       "purple_yellow" = colorRampPalette(c("#9B59B6", "#F39C12"))(100),
       "blue_red" = colorRampPalette(c("#3498DB", "#E74C3C"))(100),
       "green_orange" = colorRampPalette(c("#27AE60", "#E67E22"))(100),
       "cyan_pink" = colorRampPalette(c("#16A085", "#E91E63"))(100)
     )
-    
+  }
+  
+  draw_heatmap <- function(dist_mat, scheme, method_key) {
     heatmap(dist_mat,
-            col = color_palette,
-            scale = "none",
-            Rowv = NA,
-            Colv = NA,
-            margins = c(12, 12),
-            cexRow = 0.65,
-            cexCol = 0.65,
-            main = paste("מפת חום - מרחקים סטיילומטריים\nשיטה:", 
-                        c("delta" = "Classic Delta (Burrows)",
-                          "cosine" = "Cosine Distance",
-                          "wurzburg" = "Wurzburg (Cosine Delta)",
-                          "eder" = "Eder's Delta",
-                          "manhattan" = "Manhattan",
-                          "euclidean" = "Euclidean",
-                          "canberra" = "Canberra")[data$method]),
-            xlab = "",
-            ylab = "",
-            symm = TRUE,
-            revC = FALSE)
+            col = make_palette(scheme),
+            scale = "none", Rowv = NA, Colv = NA,
+            margins = c(12, 12), cexRow = 0.65, cexCol = 0.65,
+            main = paste("Heatmap - Stylometric Distances\nMethod:", distance_labels[[method_key]]),
+            xlab = "", ylab = "", symm = TRUE, revC = FALSE)
+  }
+  
+  output$heatmap_plot <- renderPlot({
+    req(analysis_data())
+    data <- analysis_data()
+    draw_heatmap(data$dist_matrix, data$color_scheme, data$method)
   })
   
   output$download_matrix <- downloadHandler(
-    filename = function() {
-      paste0("distance_matrix_", Sys.Date(), ".csv")
-    },
+    filename = function() paste0("distance_matrix_", Sys.Date(), ".csv"),
     content = function(file) {
       data <- analysis_data()
       write.csv(data$dist_matrix, file, fileEncoding = "UTF-8", row.names = TRUE)
@@ -346,37 +420,29 @@ server <- function(input, output, session) {
   )
   
   output$download_plot <- downloadHandler(
-    filename = function() {
-      paste0("heatmap_", Sys.Date(), ".png")
-    },
+    filename = function() paste0("heatmap_", Sys.Date(), ".png"),
     content = function(file) {
       data <- analysis_data()
-      dist_mat <- data$dist_matrix
-      
-      color_palette <- switch(data$color_scheme,
-        "purple_yellow" = colorRampPalette(c("#9B59B6", "#F39C12"))(100),
-        "blue_red" = colorRampPalette(c("#3498DB", "#E74C3C"))(100),
-        "green_orange" = colorRampPalette(c("#27AE60", "#E67E22"))(100),
-        "cyan_pink" = colorRampPalette(c("#16A085", "#E91E63"))(100)
-      )
-      
       png(file, width = 3200, height = 3200, res = 300)
-      heatmap(dist_mat,
-              col = color_palette,
-              scale = "none",
-              Rowv = NA,
-              Colv = NA,
-              margins = c(12, 12),
-              cexRow = 0.65,
-              cexCol = 0.65,
-              main = "מפת חום - מרחקים סטיילומטריים",
-              xlab = "",
-              ylab = "",
-              symm = TRUE,
-              revC = FALSE)
+      draw_heatmap(data$dist_matrix, data$color_scheme, data$method)
       dev.off()
     }
   )
+  
+  output$download_svg <- downloadHandler(
+    filename = function() paste0("heatmap_", Sys.Date(), ".svg"),
+    content = function(file) {
+      data <- analysis_data()
+      svg(file, width = 11, height = 11)
+      draw_heatmap(data$dist_matrix, data$color_scheme, data$method)
+      dev.off()
+    }
+  )
+  
+  session$onSessionEnded(function() {
+    d <- isolate(corpus_dir())
+    if (!is.null(d) && dir.exists(d)) unlink(d, recursive = TRUE)
+  })
 }
 
 shinyApp(ui = ui, server = server)

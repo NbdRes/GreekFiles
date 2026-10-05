@@ -10,16 +10,21 @@ for (pkg in required_packages) {
   }
 }
 
-# Function to clean text - remove accents from Greek text
+# Function to clean text - strict lowercase Greek letters and spaces only
 clean_text <- function(text) {
-  # Normalize to NFD (decompose accented characters)
-  normalized <- stringi::stri_trans_general(text, "NFD")
-  # Remove combining diacritical marks (U+0300 to U+036F)
-  cleaned <- str_replace_all(normalized, "[\\u0300-\\u036f]", "")
-  # Keep only Greek letters
+  # 1. Convert to lowercase using Greek locale
+  cleaned <- stringi::stri_trans_tolower(text, "el")
+  
+  # 2. Normalize to NFD and remove all diacritical marks
+  cleaned <- stringi::stri_trans_general(cleaned, "NFD")
+  cleaned <- str_replace_all(cleaned, "[\\u0300-\\u036f]", "")
+  
+  # 3. Keep ONLY Greek letters and spaces
   cleaned <- str_replace_all(cleaned, "[^\\p{Greek}\\s]", "")
-  # Remove extra whitespace
+  
+  # 4. Remove extra whitespace
   cleaned <- str_squish(cleaned)
+  
   return(cleaned)
 }
 
@@ -47,11 +52,9 @@ for (input_file in txt_files) {
   
   # Read the input file with UTF-8 encoding
   text <- readLines(input_file, warn = FALSE, encoding = "UTF-8")
-  cat("File has been read successfully.\n")
   
   # Clean the text
   cleaned_text <- sapply(text, clean_text, USE.NAMES = FALSE)
-  cat("Text has been cleaned.\n")
   
   # Write the cleaned text back to the original file
   tryCatch({

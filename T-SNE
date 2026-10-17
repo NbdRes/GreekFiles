@@ -1,187 +1,209 @@
-# If needed - install packages
-# install.packages(c("Rtsne", "stylo", "ggplot2", "svglite", "RColorBrewer", "ggrepel"))
-
 # Load required libraries
 library(tcltk)
 library(stylo)
 library(ggplot2)
 library(Rtsne)
 library(svglite)
-library(RColorBrewer)
+library(ggrepel)
 
-# Progress tracking
 progress_msg <- function(msg) {
   cat(paste0("[", format(Sys.time(), "%H:%M:%S"), "] ", msg, "\n"))
   flush.console()
 }
 
-progress_msg("Starting t-SNE analysis with stylo...")
+progress_msg("Starting clean t-SNE analysis...")
 
-# Select folder
-folder_path <- tk_choose.dir(caption = "Select folder containing the 'corpus' subfolder (or .txt files)")
+# 1. Select working folder (must contain a 'corpus' subfolder, STYLO-style)
+folder_path <- tk_choose.dir(caption = "Select WORKING folder (must contain a 'corpus' subfolder)")
+if (is.na(folder_path) || !nzchar(folder_path)) stop("No folder selected")
 
-if (is.na(folder_path)) {
-  stop("No folder selected")
+# If the user selected the 'corpus' folder itself, go up one level
+if (tolower(basename(folder_path)) == "corpus") {
+  folder_path <- dirname(folder_path)
+  progress_msg("Selected folder was 'corpus' itself - using its parent as working folder.")
 }
 
-progress_msg(paste("Selected folder:", folder_path))
 setwd(folder_path)
 
-# Check if 'corpus' subfolder exists; if not, load files directly from selected folder
-corpus_subfolder <- if (dir.exists(file.path(folder_path, "corpus"))) "corpus" else folder_path
-
-progress_msg("Loading texts and creating frequency table...")
-
-freq_table <- stylo(
-  gui = FALSE,
-  corpus.dir = corpus_subfolder,
-  corpus.lang = "Other",
-  analyzed.features = "w",
-  ngram.size = 1,
-  mfw.min = 100,
-  mfw.max = 100,
-  distance.measure = "delta",
-  analysis.type = "PCR",
-  write.jpg.file = FALSE,
-  write.png.file = FALSE,
-  display.on.screen = FALSE
-)
-
-progress_msg("Frequency table created!")
-
-# תיקון באג 1: שליפת 100 המילים הנפוצות בלבד במקום כל המילים בקורפוס
-all_freqs <- freq_table$table.with.all.freqs
-num_terms <- min(100, ncol(all_freqs))
-word_frequencies <- all_freqs[, 1:num_terms, drop = FALSE]
-file_labels <- rownames(word_frequencies)
-
-n_docs <- nrow(word_frequencies)
-progress_msg(paste("Loaded", n_docs, "documents with Top", num_terms, "terms"))
-
-if (n_docs < 4) {
-  stop("t-SNE requires at least 4 documents to run properly.")
+corpus_dir_path <- file.path(folder_path, "corpus")
+if (!dir.exists(corpus_dir_path)) {
+  stop("No 'corpus' subfolder found in: ", folder_path,
+       "\nCreate a folder named 'corpus' there and put the .txt files inside it.")
 }
 
-# Run t-SNE
-perplexity_val <- max(1, min(30, floor((n_docs - 1) / 3)))
-progress_msg(paste("Running t-SNE with perplexity =", perplexity_val))
+output_dir <- file.path(folder_path, "output_results")
+if (!dir.exists(output_dir)) dir.create(output_dir)
+
+progress_msg(paste("Working folder:", folder_path))
+progress_msg(paste("Corpus folder: ", corpus_dir_path))
+progress_msg(paste("Output folder: ", output_dir))
+
+# ============================================
+# 2. Load texts and strip all punctuation
+# ============================================
+progress_msg("Reading text files and stripping all punctuation...")
+
+txt_files <- list.files(corpus_dir_path, pattern = "\\.txt$", full.names = TRUE)
+
+if (length(txt_files) < 4) stop("Not enough .txt files found in: ", corpus_dir_path)
+
+use_stringi <- requireNamespace("stringi", quietly = TRUE)
+
+tokenized_corpus <- list()
+
+for (i in seq_along(txt_files)) {
+  f <- txt_files[i]
+  doc_name <- sub("\\.txt$", "", basename(f))
+  progress_msg(sprintf("(%d/%d) %s [%.1f MB]", i, length(txt_files),
+                       basename(f), file.size(f) / 1e6))
+
+  lines <- readLines(f, encoding = "UTF-8", warn = FALSE)
+  lines <- enc2utf8(lines)
+
+  if (use_stringi) {
+    lines <- stringi::stri_trans_tolower(lines)
+    lines <- stringi::stri_replace_all_regex(lines, "[^\\p{L}\\p{M}]+", " ")
+  } else {
+    lines <- tolower(lines)
+    lines <- gsub("[^\\p{L}\\p{M}]+", " ", lines, perl = TRUE)
+  }
+
+  words <- unlist(strsplit(lines, " ", fixed = TRUE), use.names = FALSE)
+  words <- words[nzchar(words)]
+
+  tokenized_corpus[[doc_name]] <- words
+}
+
+progress_msg(paste("Successfully tokenized", length(tokenized_corpus), "documents."))
+
+progress_msg("Building frequency list (top 5000)...")
+frequent_features <- make.frequency.list(tokenized_corpus, head = 5000)
+word_frequencies  <- make.table.of.frequencies(tokenized_corpus, features = frequent_features, relative = TRUE)
+
+file_labels <- rownames(word_frequencies)
+progress_msg(paste("Frequency table ready:", nrow(word_frequencies), "docs x", ncol(word_frequencies), "words."))
+
+# ============================================
+# 3. t-SNE
+# ============================================
+n_docs <- nrow(word_frequencies)
+perplexity_val <- min(10, floor((n_docs - 2) / 3))
+if (perplexity_val < 1) stop("Too few documents for t-SNE.")
+progress_msg(paste("Running t-SNE with perplexity", perplexity_val))
 
 set.seed(42)
-
 tsne_result <- Rtsne(
   as.matrix(word_frequencies),
   dims = 2,
   perplexity = perplexity_val,
   verbose = TRUE,
-  max_iter = 500,
+  max_iter = 1000,
   theta = 0.5,
   check_duplicates = FALSE,
   num_threads = 0
 )
+progress_msg("t-SNE finished.")
 
-progress_msg("t-SNE complete!")
+# ============================================
+# 4. Shorten labels
+# ============================================
+clean_labels <- file_labels
+clean_labels <- sub("_SC_tlg[0-9]+\\.tlg[0-9]+.*$", "", clean_labels)
+clean_labels <- sub("^Septuaginta_", "LXX_", clean_labels)
+clean_labels <- sub("^New_Testament_", "NT_", clean_labels)
+clean_labels <- sub("^NT_Gospel_of_([^_]+)_.*$", "NT_Gospel_of_\\1", clean_labels)
+clean_labels <- sub("^(NT_[^_]+_[^_]+)_.*$", "\\1", clean_labels)
+clean_labels <- sub("^Eusebius_of_Caesarea_", "Eusebius_", clean_labels)
+clean_labels <- sub("^Flavius_Josephus_", "Josephus_", clean_labels)
+clean_labels <- sub("^Philo_Judaeus_", "Philo_", clean_labels)
+clean_labels <- sub("^Homeric_Hymns_", "Homeric_", clean_labels)
 
-# Create data frame
+# ============================================
+# 5. Rotation
+# ============================================
+rotation_angle_deg <- 110
+flip_horizontal    <- FALSE
+flip_vertical      <- FALSE
+
+theta_rad <- rotation_angle_deg * pi / 180
+raw_x <- tsne_result$Y[, 1]
+raw_y <- tsne_result$Y[, 2]
+
+rot_x <- raw_x * cos(theta_rad) - raw_y * sin(theta_rad)
+rot_y <- raw_x * sin(theta_rad) + raw_y * cos(theta_rad)
+
+if (flip_horizontal) rot_x <- -rot_x
+if (flip_vertical)   rot_y <- -rot_y
+
 tsne_df <- data.frame(
-  X = tsne_result$Y[, 1],
-  Y = tsne_result$Y[, 2],
-  Label = file_labels
+  X = rot_x,
+  Y = rot_y,
+  Full_Filename = file_labels,
+  Label = clean_labels
 )
 
 # ============================================
-# יצירת קבוצות צבע לפי שתי האותיות הראשונות
+# 6. Color groups
 # ============================================
+is_translated <- grepl("^(Septuaginta|Liber_Enoch|LXX_|Enoch)", file_labels) &
+                 !grepl("Machabaeorum_(ii|iii|iv)|Maccabees_[234]", file_labels)
 
-tsne_df$Group <- substr(file_labels, 1, 2)
-
-unique_groups <- sort(unique(tsne_df$Group))
-n_groups <- length(unique_groups)
-progress_msg(paste("Found", n_groups, "groups based on first 2 letters:"))
-progress_msg(paste("Groups:", paste(unique_groups, collapse = ", ")))
+tsne_df$Group <- ifelse(is_translated, "Translated Works", "Original Greek")
+group_colors <- c("Original Greek" = "#66c2a5", "Translated Works" = "#fc8d62")
 
 # ============================================
-# התאמות גרפיות
+# 7. Plot
 # ============================================
-
-point_size <- 3
-point_alpha <- 0.7
-
-text_size <- 3
-text_hjust <- 0
-text_vjust <- 0
-text_nudge_x <- 0.5
-text_nudge_y <- 0
-show_text_overlap <- TRUE
-
-plot_title <- paste0("t-SNE of Word-Frequency Vectors (Top ", num_terms, " Terms)")
-plot_subtitle <- paste("Folder:", basename(folder_path), "| Colored by first 2 letters")
-x_axis_label <- "t-SNE 1"
-y_axis_label <- "t-SNE 2"
-
-background_color <- "white"
-grid_color <- "grey90"
-title_size <- 14
-axis_text_size <- 10
-
-color_palette <- "Set2"
-max_pal_colors <- brewer.pal.info[color_palette, "maxcolors"]
-
-# תיקון באג 3: תמיכה אוטומטית ביותר מ-8 קבוצות צבע
-if (n_groups <= max_pal_colors) {
-  group_colors <- brewer.pal(max(3, n_groups), color_palette)[1:n_groups]
-} else {
-  group_colors <- colorRampPalette(brewer.pal(max_pal_colors, color_palette))(n_groups)
-}
-
-# Create the plot with colors by group
+progress_msg("Building plot...")
 p <- ggplot(tsne_df, aes(x = X, y = Y, label = Label, color = Group)) +
-  geom_point(size = point_size, alpha = point_alpha) +
-  geom_text(hjust = text_hjust, vjust = text_vjust, size = text_size,
-            nudge_x = text_nudge_x, nudge_y = text_nudge_y,
-            check_overlap = show_text_overlap, show.legend = FALSE) +
+  geom_point(size = 3.2, alpha = 0.9) +
+  geom_text_repel(
+    size = 3,
+    box.padding = 0.15,
+    point.padding = 0.15,
+    segment.color = NA,
+    max.overlaps = 50,
+    max.iter = 3000,
+    max.time = 2,
+    seed = 42,
+    show.legend = FALSE
+  ) +
   scale_color_manual(values = group_colors) +
+  scale_x_continuous(expand = expansion(mult = c(0.12, 0.18))) +
+  scale_y_continuous(expand = expansion(mult = c(0.10, 0.10))) +
   labs(
-    title = plot_title,
-    subtitle = plot_subtitle,
-    x = x_axis_label,
-    y = y_axis_label,
-    color = "Group\n(First 2 letters)"
+    title = paste0("t-SNE of Word-Frequency Vectors (All ", ncol(word_frequencies), " Terms - No Punctuation)"),
+    subtitle = paste("Raw Relative Frequencies | Perplexity:", perplexity_val, "| Rotated:", rotation_angle_deg, "°"),
+    x = "t-SNE 1",
+    y = "t-SNE 2",
+    color = "Legend"
   ) +
   theme_minimal(base_size = 11) +
   theme(
-    plot.title = element_text(face = "bold", size = title_size, hjust = 0),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0),
     plot.subtitle = element_text(size = 10, color = "grey40"),
-    axis.text = element_text(size = axis_text_size),
-    axis.title = element_text(size = 11, face = "bold"),
-    plot.background = element_rect(fill = background_color, color = NA),
-    panel.background = element_rect(fill = background_color, color = NA),
-    panel.grid.major = element_line(color = grid_color),
-    panel.grid.minor = element_line(color = grid_color, linewidth = 0.25),
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_line(color = "grey92"),
+    panel.grid.minor = element_blank(),
     legend.position = "right",
-    legend.title = element_text(face = "bold", size = 10),
-    legend.text = element_text(size = 9)
+    legend.title = element_text(face = "bold", size = 10)
   )
 
-print(p)
-
-# Save outputs (both SVG and PNG)
-progress_msg("Saving results...")
-
-output_svg <- file.path(folder_path, "tsne_analysis_grouped.svg")
-ggsave(output_svg, plot = p, width = 14, height = 8)
-
-output_png <- file.path(folder_path, "tsne_analysis_grouped.png")
-ggsave(output_png, plot = p, width = 14, height = 8, dpi = 300)
-
-# Save with group information
-csv_file <- file.path(folder_path, "tsne_results_grouped.csv")
+# ============================================
+# 8. Save outputs (outside the corpus folder)
+# ============================================
+progress_msg("Saving CSV...")
+csv_file <- file.path(output_dir, "tsne_no_punctuation.csv")
 write.csv(tsne_df, csv_file, row.names = FALSE)
 
-terms_file <- file.path(folder_path, "top100_terms_stylo.txt")
-writeLines(colnames(word_frequencies), terms_file)
+progress_msg("Saving SVG...")
+output_svg <- file.path(output_dir, "tsne_no_punctuation.svg")
+ggsave(output_svg, plot = p, width = 15, height = 9)
+
+progress_msg("Saving PNG...")
+output_png <- file.path(output_dir, "tsne_no_punctuation.png")
+ggsave(output_png, plot = p, width = 15, height = 9, dpi = 300)
 
 progress_msg("=== COMPLETE ===")
-progress_msg(paste("SVG Plot saved:", output_svg))
-progress_msg(paste("PNG Plot saved:", output_png))
-progress_msg(paste("Data saved:", csv_file))
-progress_msg(paste("Terms saved:", terms_file))
+progress_msg(paste("SVG saved to:", output_svg))
